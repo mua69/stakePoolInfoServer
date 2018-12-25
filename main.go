@@ -27,6 +27,7 @@ type Part_Blockchaininfo struct {
 
 type Part_Stakinginfo struct {
 	Staking bool
+	Cause string
 }
 
 type ParticldStatus struct {
@@ -162,15 +163,15 @@ func particldStatusCollector() {
 			var stakeinfo Part_Stakinginfo
 			var urlWallet string
 			if g_config.ParticldStakingWallet != "" {
-				urlWallet = fmt.Sprintf("%s/wallet/%s", g_config.ParticldStakingWallet)
+				urlWallet = fmt.Sprintf("%s/wallet/%s", url, g_config.ParticldStakingWallet)
 			} else {
 				urlWallet = url
 			}
 			if execRpcJson(&stakeinfo, urlWallet, "getstakinginfo") {
 				if stakeinfo.Staking {
-					status.Staking = "enabled"
+					status.Staking = "active"
 				} else {
-					status.Staking = "disabled"
+					status.Staking = fmt.Sprintf("no, %s", stakeinfo.Cause)
 				}
 			} else {
 				status.Status = statusError
