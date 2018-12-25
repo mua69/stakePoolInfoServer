@@ -6,8 +6,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
-	"log"
-	"net/http"
+		"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -49,26 +48,28 @@ type Config struct {
 	Port            int
 	ParticldRpcPort int
 	ParticldDataDir string
+	ParticldStakingWallet string
 	DbUrl           string
 }
 
+var g_prgName = "stakepoolInfoServer"
 var g_particldAuth = ""
 var g_particldStatus ParticldStatus
 var g_particldStatusMutex sync.Mutex
-var g_config = Config{9100, 51735, "", ""}
+var g_config = Config{9100, 51735, "", "", ""}
 var g_httpServer *http.Server
 
 func readConfig(filename string) bool {
 	data, err := ioutil.ReadFile(filename)
 
 	if err != nil {
-		log.Printf("Failed to open config file \"%s\": %s\n", filename, err.Error())
+		fmt.Printf("Failed to open config file \"%s\": %s\n", filename, err.Error())
 		return false
 	}
 
 	err = json.Unmarshal(data, &g_config)
 	if err != nil {
-		log.Printf("Syntax error in config file %s: %v", filename, err)
+		fmt.Printf("Syntax error in config file %s: %v", filename, err)
 		return false
 	}
 
@@ -80,7 +81,7 @@ func readParticldCookie() bool {
 	data, err := ioutil.ReadFile(path)
 
 	if err != nil {
-		log.Printf("Failed to read particld cookie file \"%s\": %s\n", path, err.Error())
+		fmt.Printf("Failed to read particld cookie file \"%s\": %s\n", path, err.Error())
 		return false
 	}
 
@@ -96,26 +97,26 @@ func execRpcJson(res interface{}, addr string, cmd string) bool {
 		"params": []interface{}{},
 	})
 	if err != nil {
-		log.Printf("RPC: Marshal: %v", err)
+		fmt.Printf("RPC: Marshal: %v", err)
 		return false
 	}
 	resp, err := http.Post(addr, "application/json", strings.NewReader(string(data)))
 	if err != nil {
-		log.Printf("RPC: Post: %v", err)
+		fmt.Printf("RPC: Post: %v", err)
 		return false
 	}
 	defer resp.Body.Close()
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		log.Printf("RPC: ReadAll: %v", err)
+		fmt.Printf("RPC: ReadAll: %v", err)
 		return false
 	}
 	//result := make(map[string]interface{})
-	//log.Println(string(body))
-	//log.Println(resp.Status)
+	//fmt.Println(string(body))
+	//fmt.Println(resp.Status)
 
 	if resp.StatusCode != 200 {
-		log.Printf("RPC: Bad response status: %s", resp.Status)
+		fmt.Printf("RPC: Bad response status: %s", resp.Status)
 		return false
 	}
 
@@ -124,11 +125,11 @@ func execRpcJson(res interface{}, addr string, cmd string) bool {
 
 	err = json.Unmarshal(body, &response)
 	if err != nil {
-		log.Printf("RPC: Unmarshal: %v", err)
+		fmt.Printf("RPC: Unmarshal: %v", err)
 		return false
 	}
 
-	//log.Printf("Result: Id: %d, error: %s\n", response.Id, response.Err)
+	//fmt.Printf("Result: Id: %d, error: %s\n", response.Id, response.Err)
 
 	return true
 }
@@ -159,7 +160,13 @@ func particldStatusCollector() {
 			}
 
 			var stakeinfo Part_Stakinginfo
-			if execRpcJson(&stakeinfo, url, "getstakinginfo") {
+			var urlWallet string
+			if g_config.ParticldStakingWallet != "" {
+				urlWallet = fmt.Sprintf("%s/wallet/%s", g_config.ParticldStakingWallet)
+			} else {
+				urlWallet = url
+			}
+			if execRpcJson(&stakeinfo, urlWallet, "getstakinginfo") {
 				if stakeinfo.Staking {
 					status.Staking = "enabled"
 				} else {
@@ -199,7 +206,7 @@ func handleDaemonStats(resp http.ResponseWriter, req *http.Request) {
 
 	data, err := json.Marshal(status)
 	if err != nil {
-		log.Printf("Marshal: %v", err)
+		fmt.Printf("Marshal: %v", err)
 	}
 	io.WriteString(resp, string(data))
 
@@ -211,26 +218,28 @@ func signalHandler() {
 
 	s := <-signalChannel
 
-	log.Printf("staking_pool_statusd: Received Signal: %s", s.String())
+	fmt.Printf("%s: Received Signal: %s", g_prgName, s.String())
 
 	if err := g_httpServer.Shutdown(context.Background()); err != nil {
 		// Error from closing listeners, or context timeout:
-		log.Printf("HTTP server Shutdown: %v", err)
+		fmt.Printf("HTTP server Shutdown: %v", err)
 	}
 }
 
 func main() {
 
-	log.Printf("Started staking_pool_statusd\n")
+	fmt.Printf("Started %s\n", g_prgName)
 
 	if len(os.Args) != 2 {
-		log.Printf("Usage: %s <config file>\n", os.Args[0])
+		fmt.Printf("Usage: %s <config file>\n", g_prgName)
+		os.Exit(1)
 	}
 
 	cfgFile := os.Args[1]
 
 	if !readConfig(cfgFile) {
-		return
+		fmt.Printf("%s: Failed to read config file.\n", g_prgName)
+		os.Exit(1)
 	}
 
 	go signalHandler()
@@ -246,6 +255,5 @@ func main() {
 
 	http.HandleFunc("/stat", handleDaemonStats)
 
-	log.Println(g_httpServer.ListenAndServe())
-
+	fmt.Println(g_httpServer.ListenAndServe())
 }
