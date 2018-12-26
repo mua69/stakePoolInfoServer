@@ -13,7 +13,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
-)
+	)
 
 type Part_NetworkInfo struct {
 	Version     int
@@ -136,11 +136,11 @@ func execRpcJson(res interface{}, addr string, cmd string) bool {
 }
 
 func particldStatusCollector() {
-	statusError := "error"
+	statusError := "communication error"
 	na := "n/a"
 
 	for {
-		status := ParticldStatus{"OK", na, na, na, na, na}
+		status := ParticldStatus{"", na, na, na, na, na}
 
 		if readParticldCookie() {
 			url := fmt.Sprintf("http://%s@localhost:%d/", g_particldAuth, g_config.ParticldRpcPort)
@@ -163,17 +163,11 @@ func particldStatusCollector() {
 			var stakeinfo Part_Stakinginfo
 			var urlWallet string
 			if g_config.ParticldStakingWallet != "" {
-				urlWallet = fmt.Sprintf("%s/wallet/%s", url, g_config.ParticldStakingWallet)
+				urlWallet = fmt.Sprintf("%swallet/%s", url, g_config.ParticldStakingWallet)
 			} else {
 				urlWallet = url
 			}
-			if execRpcJson(&stakeinfo, urlWallet, "getstakinginfo") {
-				if stakeinfo.Staking {
-					status.Staking = "active"
-				} else {
-					status.Staking = fmt.Sprintf("no, %s", stakeinfo.Cause)
-				}
-			} else {
+			if !execRpcJson(&stakeinfo, urlWallet, "getstakinginfo") {
 				status.Status = statusError
 			}
 
@@ -183,6 +177,14 @@ func particldStatusCollector() {
 				status.Uptime = fmt.Sprintf("%.1f days", float64(uptime)/3600/24)
 			} else {
 				status.Status = statusError
+			}
+
+			if status.Status != statusError {
+				if stakeinfo.Staking {
+					status.Status = "OK"
+				} else {
+					status.Status = fmt.Sprintf("not staking: %s", stakeinfo.Cause)
+				}
 			}
 		} else {
 			status.Status = statusError
@@ -198,6 +200,7 @@ func particldStatusCollector() {
 
 func handleDaemonStats(resp http.ResponseWriter, req *http.Request) {
 	resp.Header().Set("Content-Type", "application/json; charset=utf-8")
+	resp.Header().Set("Access-Control-Allow-Origin", "*")
 
 	var status ParticldStatus
 
@@ -215,15 +218,15 @@ func handleDaemonStats(resp http.ResponseWriter, req *http.Request) {
 
 func signalHandler() {
 	signalChannel := make(chan os.Signal, 1)
-	signal.Notify(signalChannel, os.Interrupt, syscall.SIGINT)
+	signal.Notify(signalChannel, os.Interrupt, syscall.SIGINT, syscall.SIGQUIT)
 
 	s := <-signalChannel
 
-	fmt.Printf("%s: Received Signal: %s", g_prgName, s.String())
+	fmt.Printf("%s: Received Signal: %s\n", g_prgName, s.String())
 
 	if err := g_httpServer.Shutdown(context.Background()); err != nil {
 		// Error from closing listeners, or context timeout:
-		fmt.Printf("HTTP server Shutdown: %v", err)
+		fmt.Printf("HTTP server Shutdown: %v\n", err)
 	}
 }
 
