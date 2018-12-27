@@ -532,7 +532,7 @@ func telegramRegularMessages() {
 
 		if now != lastTc {
 			lastTc = now
-			fmt.Printf("timer: %d\n", now)
+			//fmt.Printf("timer: %d\n", now)
 			if now == triggerTc {
 				telegramCmdStatus(chatId)
 			}
