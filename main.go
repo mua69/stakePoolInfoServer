@@ -274,9 +274,9 @@ func particldStatusCollector() {
 
 			if status.Status != statusError {
 				if stakeinfo.Staking {
-					status.Status = "OK"
+					status.Status = "Staking"
 				} else {
-					status.Status = fmt.Sprintf("not staking: %s", stakeinfo.Cause)
+					status.Status = fmt.Sprintf("Not Staking: %s", stakeinfo.Cause)
 				}
 			}
 		} else {
@@ -311,7 +311,6 @@ func handleDaemonStats(resp http.ResponseWriter, req *http.Request) {
 
 func telegramCall(in, out interface{}, request string, timeout time.Duration) bool {
 	url := fmt.Sprintf("https://api.telegram.org/bot%s/%s", g_tgConfig.BotAuth, request)
-	//fmt.Printf("telegramCall: URL: %s\n", url)
 
 	client := &http.Client{
 		Timeout: timeout,
@@ -334,7 +333,7 @@ func telegramCall(in, out interface{}, request string, timeout time.Duration) bo
 		fmt.Printf("telegramCall: ReadAll: %v", err)
 		return false
 	}
-	//result := make(map[string]interface{})
+
 	//fmt.Println(string(body))
 	//fmt.Println(resp.Status)
 
@@ -367,8 +366,8 @@ func telegramSendMessage(chatId int64, msg string) bool {
 	req.Chat_id = chatId
 	req.Text = msg
 	req.Parse_mode = "Markdown"
-	req.Disable_notification = false
-	req.Disable_web_page_preview = true
+	req.Disable_notification = true
+	req.Disable_web_page_preview = false
 
 	var res TGMessage
 	if !telegramCall(req, &res, "sendMessage", 10*time.Second) {
@@ -383,22 +382,31 @@ func telegramSendMessage(chatId int64, msg string) bool {
 	return true
 }
 
-func telegramSendStatus(chatId int64) bool {
+func telegramCmdStatus(chatId int64) bool {
 	var status ParticldStatus
 
 	g_particldStatusMutex.Lock()
 	status = g_particldStatus
 	g_particldStatusMutex.Unlock()
 
-	msg := fmt.Sprintf("Particl Node Info %s:\n", time.Now().UTC().Format(time.RFC3339))
-	msg += fmt.Sprintf("```")
-	msg += fmt.Sprintf("  Status    : %s\n", status.Status)
-	msg += fmt.Sprintf("  Version   : %s\n", status.Version)
-	msg += fmt.Sprintf("  Uptime    : %s\n", status.Uptime)
-	msg += fmt.Sprintf("  Peers     : %s\n", status.Peers)
-	msg += fmt.Sprintf("  Last Block: %s\n", status.LastBlock)
-	msg += fmt.Sprintf("```")
+	msg := "*Particl Node Info*\n"
+	msg += "```"
+	msg += fmt.Sprintf(" Timestamp : %s\n", time.Now().UTC().Format(time.RFC3339))
+	msg += fmt.Sprintf(" Status    : %s\n", status.Status)
+	msg += fmt.Sprintf(" Version   : %s\n", status.Version)
+	msg += fmt.Sprintf(" Uptime    : %s\n", status.Uptime)
+	msg += fmt.Sprintf(" Peers     : %s\n", status.Peers)
+	msg += fmt.Sprintf(" Last Block: %s\n", status.LastBlock)
+	msg += "```"
 
+	return telegramSendMessage(chatId, msg)
+}
+
+func telegramCmdStart(chatId int64, user string) bool {
+	msg := fmt.Sprintf("Hello %s!\n\n", user)
+	msg += "This bot is intended to monitor and query the Crymel Particl Cold Staking Pool: https://particl.crymel.icu\n"
+	msg += "\n*Commands:*\n"
+	msg += "/status - Print Particl node status\n"
 	return telegramSendMessage(chatId, msg)
 }
 
@@ -413,6 +421,12 @@ func telegramGetChat(chatName string) (bool, int64) {
 	return false, 0
 }
 
+/*
+Bot Commands:
+
+status - Print Particl node status
+
+ */
 func telegramBot() {
 	updateOffset := 0
 	for {
@@ -465,14 +479,10 @@ func telegramBot() {
 					fmt.Printf("TG cmd: %s, args: %s\n", cmd, strings.Join(args, ":"))
 					switch cmd {
 					case "/start":
-						msg := fmt.Sprintf("Hello %s!", user)
-						msg += fmt.Sprintf("\nThis bot is related to the Crymel Particl Cold Staking Pool https://particl.crymel.icu")
-						msg += fmt.Sprintf("\n\nCommands:")
-						msg += fmt.Sprintf("\n`  /status`: Print Staking Pool status")
-						telegramSendMessage(m.Chat.Id, msg)
+						telegramCmdStart(m.Chat.Id, user)
 
 					case "/status":
-						telegramSendStatus(m.Chat.Id)
+						telegramCmdStatus(m.Chat.Id)
 
 					default:
 						telegramSendMessage(m.Chat.Id, "Invalid command.")
@@ -488,11 +498,11 @@ func telegramBot() {
 
 func telegramRegularMessages() {
 	if g_tgConfig.StatusMsgHour < 0 || g_tgConfig.StatusMsgHour > 23 {
-		fmt.Printf("TG: invalid status message hour value: %d", g_tgConfig.StatusMsgHour)
+		fmt.Printf("TG: invalid status message hour value: %d\n", g_tgConfig.StatusMsgHour)
 		return
 	}
 	if g_tgConfig.StatusMsgMinute < 0 || g_tgConfig.StatusMsgMinute > 59 {
-		fmt.Printf("TG: invalid status message minute value: %d", g_tgConfig.StatusMsgMinute)
+		fmt.Printf("TG: invalid status message minute value: %d\n", g_tgConfig.StatusMsgMinute)
 		return
 	}
 	if g_tgConfig.StatusMsgChatName == "" {
@@ -503,24 +513,29 @@ func telegramRegularMessages() {
 	ok, chatId := telegramGetChat(g_tgConfig.StatusMsgChatName)
 
 	if !ok {
-		fmt.Printf("TG: Failed to retrieve chat id for chat %s.", g_tgConfig.StatusMsgChatName)
+		fmt.Printf("TG: Failed to retrieve chat id for chat %s.\n", g_tgConfig.StatusMsgChatName)
 		return
 	}
 
 	fmt.Printf("Sending Telegram status message at %02d:%02d UTC to chat %s(%d).\n", g_tgConfig.StatusMsgHour,
 		g_tgConfig.StatusMsgMinute, g_tgConfig.StatusMsgChatName, chatId)
 
-	latch := false
-	for {
-		now := time.Now().UTC()
+	toTc := func(h, m int) int { return h*60 + m}
+	timeToTc := func(t time.Time) int { return toTc(t.Hour(), t.Minute()) }
 
-		if now.Hour() == g_tgConfig.StatusMsgHour && now.Minute() == g_tgConfig.StatusMsgMinute {
-			if !latch {
-				telegramSendStatus(chatId)
-				latch = true
+
+	triggerTc := toTc(g_tgConfig.StatusMsgHour, g_tgConfig.StatusMsgMinute)
+	lastTc := -1
+
+	for {
+		now := timeToTc(time.Now().UTC())
+
+		if now != lastTc {
+			lastTc = now
+			fmt.Printf("timer: %d\n", now)
+			if now == triggerTc {
+				telegramCmdStatus(chatId)
 			}
-		} else {
-			latch = false
 		}
 
 		time.Sleep(1 * time.Second)
@@ -529,7 +544,7 @@ func telegramRegularMessages() {
 
 func signalHandler() {
 	signalChannel := make(chan os.Signal, 1)
-	signal.Notify(signalChannel, os.Interrupt, syscall.SIGINT, syscall.SIGQUIT)
+	signal.Notify(signalChannel, os.Interrupt, syscall.SIGQUIT, syscall.SIGTERM)
 
 	s := <-signalChannel
 
