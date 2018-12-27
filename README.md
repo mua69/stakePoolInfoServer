@@ -36,11 +36,11 @@ Configuration files are in JSON format.
 Mandatory configuration file (`<config file>`):
 ```json
 {
-  "Port":9100,                          # Port number for JSON HTTP server
-  "ParticldRpcPort":51735,              # RPC port number of particld
-  "ParticldDataDir":"/data/particl",    # particld data directory, for .cookie lookup
-  "ParticldStakingWallet":"pool_stake", # name of staking wallet
-  "DbUrl":""                            # not used up to now
+  "Port":9100,                          // Port number for JSON HTTP server
+  "ParticldRpcPort":51735,              // RPC port number of particld
+  "ParticldDataDir":"/data/particl",    // particld data directory, for .cookie lookup
+  "ParticldStakingWallet":"pool_stake", // name of staking wallet
+  "DbUrl":""                            // not used up to now
 }
 
 ```
@@ -48,10 +48,10 @@ Mandatory configuration file (`<config file>`):
 Optional Telegram config file (`<telegram config file>`). If not provided Telegram bot will not be started.
 ```json
 {
-  "BotName": "<bot user name>",          # bot user name
-  "BotAuth": "<bot authorization token", # bot authorization token without lead "bot"
-  "StatusMsgHour": 22,                   # hour (UTC) at which status message is sent
-  "StatusMsgMinute": 14,                 # minute (UTC) at which status message is sent
-  "StatusMsgChatName": "@<chat name>"    # name of chat to which status message is sent
+  "BotName": "<bot user name>",          // bot user name
+  "BotAuth": "<bot authorization token", // bot authorization token without lead "bot"
+  "StatusMsgHour": 22,                   // hour (UTC) at which status message is sent
+  "StatusMsgMinute": 14,                 // minute (UTC) at which status message is sent
+  "StatusMsgChatName": "@<chat name>"    // name of chat to which status message is sent
 }
 ```
