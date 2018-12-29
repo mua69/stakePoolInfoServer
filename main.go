@@ -112,11 +112,21 @@ type TGUpdate struct {
 	Edited_message TGMessage `json:"edited_message"`
 }
 
+type PoolAccountInfo struct {
+	Error         string `json:"error"`
+	Accumulated   int64  `json:"accumulated"`
+	Rewardpending int64  `json:"rewardpending"`
+	Rewardpaidout int64  `json:"rewardpaidout"`
+	Currenttotal  int64  `json:"currenttotal"`
+	Laststaking   int64  `json:"laststaking"`
+}
+
 type Config struct {
 	Port                  int
 	ParticldRpcPort       int
 	ParticldDataDir       string
 	ParticldStakingWallet string
+	StakePoolUrl          string
 	DbUrl                 string
 }
 
@@ -128,11 +138,13 @@ type TGConfig struct {
 	StatusMsgChatName string
 }
 
+const SatPerPart = 100000000
+
 var g_prgName = "stakepoolInfoServer"
 var g_particldAuth = ""
 var g_particldStatus ParticldStatus
 var g_particldStatusMutex sync.Mutex
-var g_config = Config{9100, 51735, "", "", ""}
+var g_config = Config{9100, 51735, "", "", "", ""}
 var g_httpServer *http.Server
 var g_tgConfig TGConfig
 
@@ -182,6 +194,57 @@ func readParticldCookie() bool {
 	g_particldAuth = strings.TrimSpace(string(data))
 
 	return true
+}
+
+// retieve JSON data from stakepool
+func spCall(cmd string, res interface{}) bool {
+
+	url := strings.TrimRight(g_config.StakePoolUrl, "/") + "/" + cmd
+
+	resp, err := http.Get(url)
+
+	if err != nil {
+		fmt.Printf("stakepoolCall: Error: Get: %v", err)
+		return false
+	}
+
+	defer resp.Body.Close()
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		fmt.Printf("stakepoolCall: Error: ReadAll: %v", err)
+		return false
+	}
+
+	//fmt.Println(string(body))
+	//fmt.Println(resp.Status)
+
+	if resp.StatusCode != 200 {
+		fmt.Printf("stakepoolCall: Bad response status: %s", resp.Status)
+		return false
+	}
+
+	err = json.Unmarshal(body, &res)
+	if err != nil {
+		fmt.Printf("stakepoolCall: Unmarshal: %v", err)
+		return false
+	}
+
+	return true
+}
+
+func spAccountInfo(account string, res *PoolAccountInfo) bool {
+	cmd := "json/address/" + account
+	return spCall(cmd, res)
+}
+
+func spConvertSatToString8(sat int64) string {
+	val := float64(sat)
+	return fmt.Sprintf("%.2f PART", val/SatPerPart)
+}
+
+func spConvertSatToString16(sat int64) string {
+	val := float64(sat)
+	return fmt.Sprintf("%.2f PART", val/SatPerPart/SatPerPart)
 }
 
 func execRpcJson(res interface{}, addr string, cmd string) bool {
@@ -318,19 +381,19 @@ func telegramCall(in, out interface{}, request string, timeout time.Duration) bo
 
 	data, err := json.Marshal(in)
 	if err != nil {
-		fmt.Printf("telegramCall: Marshal: %v", err)
+		fmt.Printf("telegramCall: Marshal: %v\n", err)
 		return false
 	}
 
 	resp, err := client.Post(url, "application/json", strings.NewReader(string(data)))
 	if err != nil {
-		fmt.Printf("telegramCall: Post: %v", err)
+		fmt.Printf("telegramCall: Post: %v\n", err)
 		return false
 	}
 	defer resp.Body.Close()
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		fmt.Printf("telegramCall: ReadAll: %v", err)
+		fmt.Printf("telegramCall: ReadAll: %v\n", err)
 		return false
 	}
 
@@ -338,7 +401,7 @@ func telegramCall(in, out interface{}, request string, timeout time.Duration) bo
 	//fmt.Println(resp.Status)
 
 	if resp.StatusCode != 200 {
-		fmt.Printf("telegramCall: Bad response status: %s", resp.Status)
+		fmt.Printf("telegramCall: Bad response status: %s\n", resp.Status)
 		return false
 	}
 
@@ -375,7 +438,7 @@ func telegramSendMessage(chatId int64, msg string) bool {
 		if len(msg) < n {
 			n = len(msg)
 		}
-		fmt.Printf("telegramSendMessage: failed: chat_id: %d, msg: \"%s\"", chatId, msg[:n])
+		fmt.Printf("telegramSendMessage: failed: chat_id: %d, msg: \"%s\"\n", chatId, msg[:n])
 		return false
 	}
 
@@ -406,7 +469,8 @@ func telegramCmdStart(chatId int64, user string) bool {
 	msg := fmt.Sprintf("Hello %s!\n\n", user)
 	msg += "This bot is intended to monitor and query the Crymel Particl Cold Staking Pool: https://particl.crymel.icu\n"
 	msg += "\n*Commands:*\n"
-	msg += "/status - Print Particl node status\n"
+	msg += "/status - Get Particl node status\n"
+	msg += "/accountinfo <account id> - Get account balance in staking pool"
 	return telegramSendMessage(chatId, msg)
 }
 
@@ -421,12 +485,41 @@ func telegramGetChat(chatName string) (bool, int64) {
 	return false, 0
 }
 
+func telegramCmdAccountInfo(chatId int64, args []string) {
+
+	if len(args) < 1 {
+		telegramSendMessage(chatId, "Missing account ID argument.")
+		return
+	}
+
+	account := args[0]
+
+	var info PoolAccountInfo
+	msg := ""
+
+	if spAccountInfo(account, &info) {
+		if info.Error == "Invalid address" {
+			msg =  "Account ID `" + account + "` is not valid."
+		} else {
+			msg = "Staking pool account info for `" + account + "`:\n" +
+				"total rewards: " + spConvertSatToString16(info.Accumulated) +
+				", processed payout: " + spConvertSatToString8(info.Rewardpaidout) +
+				", pending payout: " + spConvertSatToString8(info.Rewardpending) +
+				", currenty staking: " + spConvertSatToString8(info.Currenttotal)
+		}
+	} else {
+		msg = "Error while retrieving account information - try again later."
+	}
+
+	telegramSendMessage(chatId, msg)
+}
+
 /*
 Bot Commands:
 
-status - Print Particl node status
-
- */
+status - Get Particl node status
+accountinfo <account id> - Get account balance in staking pool
+*/
 func telegramBot() {
 	updateOffset := 0
 	for {
@@ -475,6 +568,15 @@ func telegramBot() {
 					}
 				}
 
+				//cleanup args
+				var tmp []string
+				for _, a := range args {
+					if a != "" {
+						tmp = append(tmp, a)
+					}
+				}
+				args = tmp
+
 				if cmd != "" {
 					fmt.Printf("TG cmd: %s, args: %s\n", cmd, strings.Join(args, ":"))
 					switch cmd {
@@ -483,6 +585,9 @@ func telegramBot() {
 
 					case "/status":
 						telegramCmdStatus(m.Chat.Id)
+
+					case "/accountinfo":
+						telegramCmdAccountInfo(m.Chat.Id, args)
 
 					default:
 						telegramSendMessage(m.Chat.Id, "Invalid command.")
@@ -520,9 +625,8 @@ func telegramRegularMessages() {
 	fmt.Printf("Sending Telegram status message at %02d:%02d UTC to chat %s(%d).\n", g_tgConfig.StatusMsgHour,
 		g_tgConfig.StatusMsgMinute, g_tgConfig.StatusMsgChatName, chatId)
 
-	toTc := func(h, m int) int { return h*60 + m}
+	toTc := func(h, m int) int { return h*60 + m }
 	timeToTc := func(t time.Time) int { return toTc(t.Hour(), t.Minute()) }
-
 
 	triggerTc := toTc(g_tgConfig.StatusMsgHour, g_tgConfig.StatusMsgMinute)
 	lastTc := -1
@@ -598,4 +702,5 @@ func main() {
 	http.HandleFunc("/stat", handleDaemonStats)
 
 	fmt.Println(g_httpServer.ListenAndServe())
+	fmt.Printf("%s: Stopped.", g_prgName)
 }
