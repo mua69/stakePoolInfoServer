@@ -505,7 +505,7 @@ func telegramCmdAccountInfo(chatId int64, args []string) {
 				"total rewards: " + spConvertSatToString16(info.Accumulated) +
 				", processed payout: " + spConvertSatToString8(info.Rewardpaidout) +
 				", pending payout: " + spConvertSatToString8(info.Rewardpending) +
-				", currenty staking: " + spConvertSatToString8(info.Currenttotal)
+				", currently staking: " + spConvertSatToString8(info.Currenttotal)
 		}
 	} else {
 		msg = "Error while retrieving account information - try again later."
