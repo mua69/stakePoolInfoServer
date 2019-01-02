@@ -31,6 +31,7 @@ Sends daily status message (same output like command `/status`) to a pre-configu
 Bot commands:
 * `/start` - shows intro and help (the bot has no internal state so that an explicit start is not reuqired)
 * `/status` - sends Particl node status message
+* `/accountinfo <account id>` - retrieves balances of specified staking account
 
 ## Configuration
 
