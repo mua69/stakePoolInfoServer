@@ -502,9 +502,9 @@ func telegramCmdAccountInfo(chatId int64, args []string) {
 			msg =  "Account ID `" + account + "` is not valid."
 		} else {
 			msg = "Staking pool account info for `" + account + "`:\n" +
-				"total rewards: " + spConvertSatToString16(info.Accumulated) +
-				", processed payout: " + spConvertSatToString8(info.Rewardpaidout) +
-				", pending payout: " + spConvertSatToString8(info.Rewardpending) +
+				"total reward: " + spConvertSatToString16(info.Accumulated) +
+				", confirmed payout: " + spConvertSatToString8(info.Rewardpaidout) +
+				", unconfirmed payout: " + spConvertSatToString8(info.Rewardpending) +
 				", currently staking: " + spConvertSatToString8(info.Currenttotal)
 		}
 	} else {
