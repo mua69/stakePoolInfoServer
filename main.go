@@ -16,18 +16,19 @@ import (
 )
 
 type Part_NetworkInfo struct {
-	Version     int
-	Subversion  string
-	Connections int
+	Version     int    `json:"version"`
+	Subversion  string `json:"subversion"`
+	Connections int    `json:"connections"`
 }
 
 type Part_Blockchaininfo struct {
-	Blocks int
+	Blocks int `json:"blocks"`
 }
 
 type Part_Stakinginfo struct {
-	Staking bool
-	Cause   string
+	Staking bool   `json:"staking"`
+	Cause   string `json:"cause"`
+	Weight  int64  `json:"weight"`
 }
 
 type ParticldStatus struct {
@@ -37,6 +38,7 @@ type ParticldStatus struct {
 	LastBlock string `json:"last_block"`
 	Version   string `json:"version"`
 	Staking   string `json:"staking"`
+	Weight    string `json:"weight"`
 }
 
 type RpcResponse struct {
@@ -296,7 +298,7 @@ func particldStatusCollector() {
 	na := "n/a"
 
 	for {
-		status := ParticldStatus{"", na, na, na, na, na}
+		status := ParticldStatus{"", na, na, na, na, na, na}
 
 		if readParticldCookie() {
 			url := fmt.Sprintf("http://%s@localhost:%d/", g_particldAuth, g_config.ParticldRpcPort)
@@ -323,7 +325,9 @@ func particldStatusCollector() {
 			} else {
 				urlWallet = url
 			}
-			if !execRpcJson(&stakeinfo, urlWallet, "getstakinginfo") {
+			if execRpcJson(&stakeinfo, urlWallet, "getstakinginfo") {
+				status.Weight = fmt.Sprintf("%d PART", stakeinfo.Weight/SatPerPart)
+			} else {
 				status.Status = statusError
 			}
 
@@ -454,12 +458,13 @@ func telegramCmdStatus(chatId int64) bool {
 
 	msg := "*Particl Node Info*\n"
 	msg += "```"
-	msg += fmt.Sprintf(" Timestamp : %s\n", time.Now().UTC().Format(time.RFC3339))
-	msg += fmt.Sprintf(" Status    : %s\n", status.Status)
-	msg += fmt.Sprintf(" Version   : %s\n", status.Version)
-	msg += fmt.Sprintf(" Uptime    : %s\n", status.Uptime)
-	msg += fmt.Sprintf(" Peers     : %s\n", status.Peers)
-	msg += fmt.Sprintf(" Last Block: %s\n", status.LastBlock)
+	msg += fmt.Sprintf(" Timestamp     : %s\n", time.Now().UTC().Format(time.RFC3339))
+	msg += fmt.Sprintf(" Status        : %s\n", status.Status)
+	msg += fmt.Sprintf(" Version       : %s\n", status.Version)
+	msg += fmt.Sprintf(" Uptime        : %s\n", status.Uptime)
+	msg += fmt.Sprintf(" Peers         : %s\n", status.Peers)
+	msg += fmt.Sprintf(" Last Block    : %s\n", status.LastBlock)
+	msg += fmt.Sprintf(" Staking Weight: %s\n", status.Weight)
 	msg += "```"
 
 	return telegramSendMessage(chatId, msg)
@@ -499,7 +504,7 @@ func telegramCmdAccountInfo(chatId int64, args []string) {
 
 	if spAccountInfo(account, &info) {
 		if info.Error == "Invalid address" {
-			msg =  "Account ID `" + account + "` is not valid."
+			msg = "Account ID `" + account + "` is not valid."
 		} else {
 			msg = "Staking pool account info for `" + account + "`:\n" +
 				"total reward: " + spConvertSatToString16(info.Accumulated) +
