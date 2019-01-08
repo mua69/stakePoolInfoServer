@@ -458,13 +458,13 @@ func telegramCmdStatus(chatId int64) bool {
 
 	msg := "*Particl Node Info*\n"
 	msg += "```"
-	msg += fmt.Sprintf(" Timestamp     : %s\n", time.Now().UTC().Format(time.RFC3339))
-	msg += fmt.Sprintf(" Status        : %s\n", status.Status)
-	msg += fmt.Sprintf(" Version       : %s\n", status.Version)
-	msg += fmt.Sprintf(" Uptime        : %s\n", status.Uptime)
-	msg += fmt.Sprintf(" Peers         : %s\n", status.Peers)
-	msg += fmt.Sprintf(" Last Block    : %s\n", status.LastBlock)
-	msg += fmt.Sprintf(" Staking Weight: %s\n", status.Weight)
+	msg += fmt.Sprintf(" Timestamp : %s\n", time.Now().UTC().Format(time.RFC3339))
+	msg += fmt.Sprintf(" Status    : %s\n", status.Status)
+	msg += fmt.Sprintf(" Version   : %s\n", status.Version)
+	msg += fmt.Sprintf(" Uptime    : %s\n", status.Uptime)
+	msg += fmt.Sprintf(" Peers     : %s\n", status.Peers)
+	msg += fmt.Sprintf(" Last Block: %s\n", status.LastBlock)
+	msg += fmt.Sprintf(" Staking   : %s\n", status.Weight)
 	msg += "```"
 
 	return telegramSendMessage(chatId, msg)
@@ -507,10 +507,11 @@ func telegramCmdAccountInfo(chatId int64, args []string) {
 			msg = "Account ID `" + account + "` is not valid."
 		} else {
 			msg = "Staking pool account info for `" + account + "`:\n" +
-				"total reward: " + spConvertSatToString16(info.Accumulated) +
+				"total rewards: " + spConvertSatToString16(info.Accumulated) +
 				", confirmed payout: " + spConvertSatToString8(info.Rewardpaidout) +
 				", unconfirmed payout: " + spConvertSatToString8(info.Rewardpending) +
-				", currently staking: " + spConvertSatToString8(info.Currenttotal)
+				", open payout: " + spConvertSatToString8(info.Accumulated- info.Rewardpaidout -info.Rewardpending) +
+				", last staking weight: " + spConvertSatToString8(info.Currenttotal)
 		}
 	} else {
 		msg = "Error while retrieving account information - try again later."
