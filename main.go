@@ -11,8 +11,7 @@ import (
 	"os/signal"
 	"strings"
 	"sync"
-	"syscall"
-	"time"
+		"time"
 )
 
 type Part_NetworkInfo struct {
@@ -510,7 +509,7 @@ func telegramCmdAccountInfo(chatId int64, args []string) {
 				"total rewards: " + spConvertSatToString16(info.Accumulated) +
 				", confirmed payout: " + spConvertSatToString8(info.Rewardpaidout) +
 				", unconfirmed payout: " + spConvertSatToString8(info.Rewardpending) +
-				", open payout: " + spConvertSatToString8(info.Accumulated- info.Rewardpaidout -info.Rewardpending) +
+				", open payout: " + spConvertSatToString8(info.Accumulated/SatPerPart - info.Rewardpaidout -info.Rewardpending) +
 				", last staking weight: " + spConvertSatToString8(info.Currenttotal)
 		}
 	} else {
@@ -654,7 +653,7 @@ func telegramRegularMessages() {
 
 func signalHandler() {
 	signalChannel := make(chan os.Signal, 1)
-	signal.Notify(signalChannel, os.Interrupt, syscall.SIGQUIT, syscall.SIGTERM)
+	signal.Notify(signalChannel) //, os.Interrupt, syscall.SIGQUIT, syscall.SIGTERM)
 
 	s := <-signalChannel
 
