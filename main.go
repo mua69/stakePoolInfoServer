@@ -2,16 +2,20 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
+	_ "github.com/lib/pq"
+	"github.com/mua69/particlrpc"
 	"io"
 	"io/ioutil"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
-		"time"
+	"time"
 )
 
 type Part_NetworkInfo struct {
@@ -25,19 +29,25 @@ type Part_Blockchaininfo struct {
 }
 
 type Part_Stakinginfo struct {
-	Staking bool   `json:"staking"`
-	Cause   string `json:"cause"`
-	Weight  int64  `json:"weight"`
+	Staking                   bool    `json:"staking"`
+	Cause                     string  `json:"cause"`
+	Weight                    int64   `json:"weight"`
+	Percentyearreward         float64 `json:"percentyearreward"`
+	Moneysupply               float64 `json:"moneysupply"`
+	Foundationdonationpercent float64 `json:"foundationdonationpercent"`
+	Netstakeweight            int64   `json:"netstakeweight"`
+	Expectedtime              int64   `json:"expectedtime"`
 }
 
 type ParticldStatus struct {
-	Status    string `json:"status"`
-	Uptime    string `json:"uptime"`
-	Peers     string `json:"peers"`
-	LastBlock string `json:"last_block"`
-	Version   string `json:"version"`
-	Staking   string `json:"staking"`
-	Weight    string `json:"weight"`
+	Status      string  `json:"status"`
+	Uptime      string  `json:"uptime"`
+	Peers       string  `json:"peers"`
+	LastBlock   string  `json:"last_block"`
+	Version     string  `json:"version"`
+	Weight      string  `json:"weight"`
+	NominalRate float64 `json:"nominal_rate"`
+	ActualRate  float64 `json:"actual_rate"`
 }
 
 type RpcResponse struct {
@@ -128,6 +138,7 @@ type Config struct {
 	ParticldDataDir       string
 	ParticldStakingWallet string
 	StakePoolUrl          string
+	ZmqEndpoint           string
 	DbUrl                 string
 }
 
@@ -139,15 +150,35 @@ type TGConfig struct {
 	StatusMsgChatName string
 }
 
+type Sat int64
+
 const SatPerPart = 100000000
+const BlocksPerYear = 365 * 24 * 30
+const SecondsPerDay = 24 * 60 * 60
 
 var g_prgName = "stakepoolInfoServer"
-var g_particldAuth = ""
 var g_particldStatus ParticldStatus
 var g_particldStatusMutex sync.Mutex
-var g_config = Config{9100, 51735, "", "", "", ""}
+var g_config = Config{Port: 9100, ParticldRpcPort: 51735, ZmqEndpoint: "tcp://127.0.0.1:207922"}
 var g_httpServer *http.Server
 var g_tgConfig TGConfig
+
+var g_prpc *particlrpc.ParticlRpc
+var g_db *sql.DB
+
+func partToSat(v interface{}) Sat {
+	fv, ok := v.(float64)
+	if ok {
+		return Sat(fv * SatPerPart)
+	}
+
+	return 0
+}
+
+func satToString(sat Sat) string {
+	val := float64(sat)
+	return fmt.Sprintf("%.8f PART", val/SatPerPart)
+}
 
 func readConfig(filename string) bool {
 	data, err := ioutil.ReadFile(filename)
@@ -183,18 +214,22 @@ func readTelegramConfig(filename string) bool {
 	return true
 }
 
-func readParticldCookie() bool {
-	path := fmt.Sprintf("%s/.cookie", g_config.ParticldDataDir)
-	data, err := ioutil.ReadFile(path)
+func dbConnect() *sql.DB {
+	db, err := sql.Open("postgres", g_config.DbUrl)
 
 	if err != nil {
-		fmt.Printf("Failed to read particld cookie file \"%s\": %s\n", path, err.Error())
-		return false
+		fmt.Printf("Cannot connect to data base: %v\n", err)
+		return nil
 	}
 
-	g_particldAuth = strings.TrimSpace(string(data))
+	err = db.Ping()
 
-	return true
+	if err != nil {
+		fmt.Printf("Cannot connect to data base: %v\n", err)
+		return nil
+	}
+
+	return db
 }
 
 // retieve JSON data from stakepool
@@ -248,93 +283,47 @@ func spConvertSatToString16(sat int64) string {
 	return fmt.Sprintf("%.2f PART", val/SatPerPart/SatPerPart)
 }
 
-func execRpcJson(res interface{}, addr string, cmd string) bool {
-	data, err := json.Marshal(map[string]interface{}{
-		"method": cmd,
-		"id":     2,
-		"params": []interface{}{},
-	})
-	if err != nil {
-		fmt.Printf("RPC: Marshal: %v", err)
-		return false
-	}
-	resp, err := http.Post(addr, "application/json", strings.NewReader(string(data)))
-	if err != nil {
-		fmt.Printf("RPC: Post: %v", err)
-		return false
-	}
-	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		fmt.Printf("RPC: ReadAll: %v", err)
-		return false
-	}
-	//result := make(map[string]interface{})
-	//fmt.Println(string(body))
-	//fmt.Println(resp.Status)
-
-	if resp.StatusCode != 200 {
-		fmt.Printf("RPC: Bad response status: %s", resp.Status)
-		return false
-	}
-
-	response := RpcResponse{}
-	response.Result = res
-
-	err = json.Unmarshal(body, &response)
-	if err != nil {
-		fmt.Printf("RPC: Unmarshal: %v", err)
-		return false
-	}
-
-	//fmt.Printf("Result: Id: %d, error: %s\n", response.Id, response.Err)
-
-	return true
-}
-
 func particldStatusCollector() {
 	statusError := "communication error"
 	na := "n/a"
 
 	for {
-		status := ParticldStatus{"", na, na, na, na, na, na}
 
-		if readParticldCookie() {
-			url := fmt.Sprintf("http://%s@localhost:%d/", g_particldAuth, g_config.ParticldRpcPort)
+		status := ParticldStatus{"", na, na, na, na, na, 0, 0}
 
-			var nwinfo Part_NetworkInfo
-			if execRpcJson(&nwinfo, url, "getnetworkinfo") {
+		if err := g_prpc.ReadPartRpcCookie(); err == nil {
+
+			nwinfo, err := g_prpc.GetNetworkInfo()
+			if err == nil {
 				status.Version = nwinfo.Subversion
 				status.Peers = fmt.Sprintf("%d", nwinfo.Connections)
 			} else {
+				fmt.Println(err)
 				status.Status = statusError
 			}
 
-			var bcinfo Part_Blockchaininfo
-			if execRpcJson(&bcinfo, url, "getblockchaininfo") {
+			bcinfo, err := g_prpc.GetBlockchainInfo()
+			if err == nil {
 				status.LastBlock = fmt.Sprintf("%d", bcinfo.Blocks)
 			} else {
+				fmt.Println(err)
 				status.Status = statusError
 			}
 
-			var stakeinfo Part_Stakinginfo
-			var urlWallet string
-			if g_config.ParticldStakingWallet != "" {
-				urlWallet = fmt.Sprintf("%swallet/%s", url, g_config.ParticldStakingWallet)
-			} else {
-				urlWallet = url
-			}
-			if execRpcJson(&stakeinfo, urlWallet, "getstakinginfo") {
+			stakeinfo, err := g_prpc.GetStakingInfo(g_config.ParticldStakingWallet)
+			if err == nil {
 				status.Weight = fmt.Sprintf("%d PART", stakeinfo.Weight/SatPerPart)
 			} else {
+				fmt.Println(err)
 				status.Status = statusError
 			}
 
-			var uptime int64
+			uptime, err := g_prpc.GetUptime()
 
-			if execRpcJson(&uptime, url, "uptime") {
+			if err == nil {
 				status.Uptime = fmt.Sprintf("%.1f days", float64(uptime)/3600/24)
 			} else {
+				fmt.Println(err)
 				status.Status = statusError
 			}
 
@@ -350,11 +339,147 @@ func particldStatusCollector() {
 		}
 
 		g_particldStatusMutex.Lock()
-		g_particldStatus = status
+		g_particldStatus.Status = status.Status
+		g_particldStatus.Uptime = status.Uptime
+		g_particldStatus.Peers = status.Peers
+		g_particldStatus.LastBlock = status.LastBlock
+		g_particldStatus.Version = status.Version
+		g_particldStatus.Weight = status.Weight
 		g_particldStatusMutex.Unlock()
 
 		time.Sleep(60 * time.Second)
 	}
+}
+
+var g_avgActualReward = float64(0)
+
+func calcStakingReward(stakeinfo *particlrpc.StakingInfo) {
+	/*
+		var blockReward float64
+
+		blockReward = stakeinfo.Moneysupply * stakeinfo.Percentyearreward * (100 - stakeinfo.Foundationdonationpercent)
+		blockReward /= 100 * 100
+		blockReward /= BlocksPerYear
+
+		stakingTime := float64(stakeinfo.Expectedtime) / SecondsPerDay
+
+		actualReward := blockReward / stakingTime * 365 * 100 / float64(stakeinfo.Weight) * SatPerPart
+	*/
+
+	nominalReward := stakeinfo.Percentyearreward * (100 - stakeinfo.Foundationdonationpercent) / 100
+
+	actualReward := stakeinfo.Moneysupply * stakeinfo.Percentyearreward * (100 - stakeinfo.Foundationdonationpercent)
+	actualReward /= 100 * 100
+	actualReward /= float64(stakeinfo.Netstakeweight) / SatPerPart
+	actualReward *= 100
+
+	if g_avgActualReward != 0 {
+		g_avgActualReward = 0.99*g_avgActualReward + 0.01*actualReward
+	} else {
+		g_avgActualReward = actualReward
+	}
+
+	g_particldStatusMutex.Lock()
+	g_particldStatus.NominalRate = nominalReward
+	g_particldStatus.ActualRate = g_avgActualReward
+	g_particldStatusMutex.Unlock()
+
+	fmt.Printf("Actual avg reward: %.8f\n", g_avgActualReward)
+}
+
+func stakingRewardCollector() {
+	avgCnt := 100
+	for {
+		var nominalRate float64
+		var avgActualRate float64
+
+		rows, err := g_db.Query("SELECT block_nr,block_time,nominal_rate,actual_rate FROM stakingratestats ORDER BY block_nr DESC LIMIT $1", avgCnt)
+
+		if err == nil {
+			n := 0
+			avgActualRate = 0
+
+			for cont := rows.Next(); cont; cont = rows.Next() {
+				var blockNr int
+				var blockTime int64
+				var actualRate float64
+				var nom float64
+
+				err = rows.Scan(&blockNr, &blockTime, &nom, &actualRate)
+				if err == nil {
+					if nominalRate == 0 {
+						nominalRate = nom
+					}
+					avgActualRate += actualRate
+					n++
+				} else {
+					fmt.Printf("db scan failed: %v\n", err)
+				}
+
+			}
+			err = rows.Err()
+			if err != nil {
+				fmt.Printf("db next row failed: %v\n", err)
+			}
+			err = rows.Close()
+			if err != nil {
+				fmt.Printf("db close rows failed: %v\n", err)
+			}
+
+			if n > 0 {
+				avgActualRate /= float64(n)
+			}
+		} else {
+			fmt.Printf("db query failed: %v\n", err)
+		}
+
+		g_particldStatusMutex.Lock()
+		g_particldStatus.NominalRate = nominalRate
+		g_particldStatus.ActualRate = avgActualRate
+		g_particldStatusMutex.Unlock()
+
+		time.Sleep(60 * time.Second)
+	}
+
+	/*
+		zmqContext, err := zmq4.NewContext()
+		if err != nil {
+			fmt.Printf("zmq context creation failed: %v\n", err)
+			return
+		}
+
+		zmq, err := zmqContext.NewSocket(zmq4.SUB)
+		if err != nil {
+			fmt.Printf("zmq socket creation failed: %v\n", err)
+			return
+		}
+
+		err = zmq.Connect(g_config.ZmqEndpoint)
+		if err != nil {
+			fmt.Printf("zmq connect failed: %v\n", err)
+			return
+		}
+
+		zmq.SetSubscribe("hashblock")
+
+		for {
+			stakeinfo, err := g_prpc.GetStakingInfo(g_config.ParticldStakingWallet)
+			if err == nil {
+				calcStakingReward(stakeinfo)
+			} else {
+				fmt.Println(err)
+			}
+
+			msg, err := zmq.RecvMessageBytes(0)
+			if err != nil {
+				fmt.Printf("zmq receive failed: %v\n", err)
+				time.Sleep(60 * time.Second)
+			} else {
+				fmt.Printf("stakingRewardCollector: Processing block: %s\n", hex.EncodeToString(msg[1]))
+			}
+		}
+	*/
+
 }
 
 func handleDaemonStats(resp http.ResponseWriter, req *http.Request) {
@@ -474,7 +599,8 @@ func telegramCmdStart(chatId int64, user string) bool {
 	msg += "This bot is intended to monitor and query the Crymel Particl Cold Staking Pool: https://particl.crymel.icu\n"
 	msg += "\n*Commands:*\n"
 	msg += "/status - Get Particl node status\n"
-	msg += "/accountinfo <account id> - Get account balance in staking pool"
+	msg += "/accountinfo <account id> - Get account balance in staking pool\n"
+	msg += "/stakeinfo [<amount PART>] - Get staking interest rate info"
 	return telegramSendMessage(chatId, msg)
 }
 
@@ -509,11 +635,41 @@ func telegramCmdAccountInfo(chatId int64, args []string) {
 				"total rewards: " + spConvertSatToString16(info.Accumulated) +
 				", confirmed payout: " + spConvertSatToString8(info.Rewardpaidout) +
 				", unconfirmed payout: " + spConvertSatToString8(info.Rewardpending) +
-				", open payout: " + spConvertSatToString8(info.Accumulated/SatPerPart - info.Rewardpaidout -info.Rewardpending) +
+				", open payout: " + spConvertSatToString8(info.Accumulated/SatPerPart-info.Rewardpaidout-info.Rewardpending) +
 				", last staking weight: " + spConvertSatToString8(info.Currenttotal)
 		}
 	} else {
 		msg = "Error while retrieving account information - try again later."
+	}
+
+	telegramSendMessage(chatId, msg)
+}
+
+func telegramCmdStakeInfo(chatId int64, args []string) {
+	var amount float64
+
+	if len(args) >= 1 {
+		var err error
+		amount, err = strconv.ParseFloat(args[0], 64)
+		if err != nil {
+			telegramSendMessage(chatId, "PART amount value \""+args[0]+"\" is not valid.")
+			return
+		}
+	}
+
+	g_particldStatusMutex.Lock()
+	status := g_particldStatus
+	g_particldStatusMutex.Unlock()
+
+	msg := fmt.Sprintf("Nominal annual staking interest rate: %.1f\n", status.NominalRate)
+	msg += fmt.Sprintf("Actual annual staking interest rate: %.1f\n", status.ActualRate)
+
+	if amount > 0 {
+		reward := amount * status.NominalRate / 100 / 365
+		msg += fmt.Sprintf("Nominal daily reward for staking %.2f PART: %.2f PART\n", amount, reward)
+
+		reward = amount * status.ActualRate / 100 / 365
+		msg += fmt.Sprintf("Actual daily reward for staking %.2f PART: %.2f PART\n", amount, reward)
 	}
 
 	telegramSendMessage(chatId, msg)
@@ -524,6 +680,7 @@ Bot Commands:
 
 status - Get Particl node status
 accountinfo <account id> - Get account balance in staking pool
+stakeinfo [<amount part>] - Get staking interest info
 */
 func telegramBot() {
 	updateOffset := 0
@@ -593,6 +750,9 @@ func telegramBot() {
 
 					case "/accountinfo":
 						telegramCmdAccountInfo(m.Chat.Id, args)
+
+					case "/stakeinfo":
+						telegramCmdStakeInfo(m.Chat.Id, args)
 
 					default:
 						telegramSendMessage(m.Chat.Id, "Invalid command.")
@@ -688,8 +848,20 @@ func main() {
 		}
 	}
 
+	g_prpc = particlrpc.NewParticlRpc()
+
+	g_prpc.SetRpcPort(g_config.ParticldRpcPort)
+	g_prpc.SetDataDirectoy(g_config.ParticldDataDir)
+
+	g_db = dbConnect()
+
+	if g_db == nil {
+		os.Exit(1)
+	}
+
 	go signalHandler()
 	go particldStatusCollector()
+	go stakingRewardCollector()
 
 	if g_tgConfig.BotName != "" && g_tgConfig.BotAuth != "" {
 		go telegramBot()
@@ -707,5 +879,5 @@ func main() {
 	http.HandleFunc("/stat", handleDaemonStats)
 
 	fmt.Println(g_httpServer.ListenAndServe())
-	fmt.Printf("%s: Stopped.", g_prgName)
+	fmt.Printf("%s: Stopped.\n", g_prgName)
 }
