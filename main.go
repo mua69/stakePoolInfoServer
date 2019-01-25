@@ -7,8 +7,7 @@ import (
 	"fmt"
 	_ "github.com/lib/pq"
 	"github.com/mua69/particlrpc"
-	"io"
-	"io/ioutil"
+		"io/ioutil"
 	"net/http"
 	"os"
 	"os/signal"
@@ -16,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"io"
 )
 
 type Part_NetworkInfo struct {
@@ -150,6 +150,11 @@ type TGConfig struct {
 	StatusMsgChatName string
 }
 
+type StakingRateHistory struct {
+	Timestamp int64
+	Rate float64
+}
+
 type Sat int64
 
 const SatPerPart = 100000000
@@ -162,6 +167,9 @@ var g_particldStatusMutex sync.Mutex
 var g_config = Config{Port: 9100, ParticldRpcPort: 51735, ZmqEndpoint: "tcp://127.0.0.1:207922"}
 var g_httpServer *http.Server
 var g_tgConfig TGConfig
+
+var g_stakingRateHistoryHourly []StakingRateHistory
+var g_stakingRateHistoryDaily []StakingRateHistory
 
 var g_prpc *particlrpc.ParticlRpc
 var g_db *sql.DB
@@ -482,23 +490,71 @@ func stakingRewardCollector() {
 
 }
 
-func handleDaemonStats(resp http.ResponseWriter, req *http.Request) {
-	resp.Header().Set("Content-Type", "application/json; charset=utf-8")
-	resp.Header().Set("Access-Control-Allow-Origin", "*")
+func getStakingRateHistory(interval int64, cnt int) []StakingRateHistory {
+	rows, err := g_db.Query("select block_time/$1 as x, sum(actual_rate)/count(actual_rate) as avg from stakingratestats  group by x order by x desc limit $2",
+		interval, cnt)
 
-	var status ParticldStatus
-
-	g_particldStatusMutex.Lock()
-	status = g_particldStatus
-	g_particldStatusMutex.Unlock()
-
-	data, err := json.Marshal(status)
 	if err != nil {
-		fmt.Printf("Marshal: %v", err)
+		fmt.Printf("getStakingRateHistory: db query failed: %v\n", err)
+		return nil
 	}
-	io.WriteString(resp, string(data))
+
+	res := make([]StakingRateHistory, 0, cnt)
+
+	i := 0
+	for cont := rows.Next(); cont; cont = rows.Next() {
+		var timestamp int64
+		var rate float64
+
+		err = rows.Scan(&timestamp, &rate)
+
+		if err == nil {
+			if i < cnt {
+				res = append(res, StakingRateHistory{timestamp * interval, rate})
+				i++
+			}
+		} else {
+			fmt.Printf("getStakingRateHistory: db scan failed: %v\n", err)
+			break
+		}
+	}
+
+	err = rows.Err()
+	if err != nil {
+		fmt.Printf("getStakingRateHistory: db next row failed: %v\n", err)
+	}
+	err = rows.Close()
+	if err != nil {
+		fmt.Printf("getStakingRateHistory: db close rows failed: %v\n", err)
+	}
+
+	return res
+}
+
+func stakingRateHistoryCollector() {
+	var lastUpdate time.Time
+
+	for {
+		if time.Since(lastUpdate) > 10*60*time.Second {
+			//fmt.Printf("Updating staking rate history.\n")
+			lastUpdate = time.Now()
+
+			histHourly := getStakingRateHistory(60*60, 24)
+			histDaily := getStakingRateHistory(24*60*60, 30)
+
+			g_particldStatusMutex.Lock()
+			g_stakingRateHistoryHourly = make([]StakingRateHistory, len(histHourly))
+			g_stakingRateHistoryDaily = make([]StakingRateHistory, len(histDaily))
+			copy(g_stakingRateHistoryHourly, histHourly)
+			copy(g_stakingRateHistoryDaily, histDaily)
+			g_particldStatusMutex.Unlock()
+		}
+
+		time.Sleep(time.Second)
+	}
 
 }
+
 
 func telegramCall(in, out interface{}, request string, timeout time.Duration) bool {
 	url := fmt.Sprintf("https://api.telegram.org/bot%s/%s", g_tgConfig.BotAuth, request)
@@ -825,6 +881,79 @@ func signalHandler() {
 	}
 }
 
+func handleDaemonStats(resp http.ResponseWriter, req *http.Request) {
+	resp.Header().Set("Content-Type", "application/json; charset=utf-8")
+	resp.Header().Set("Access-Control-Allow-Origin", "*")
+
+	var status ParticldStatus
+
+	g_particldStatusMutex.Lock()
+	status = g_particldStatus
+	g_particldStatusMutex.Unlock()
+
+	data, err := json.Marshal(status)
+	if err != nil {
+		fmt.Printf("Marshal: %v", err)
+	}
+	io.WriteString(resp, string(data))
+
+}
+
+
+func handleStakingRateHistoryHourly(resp http.ResponseWriter, req *http.Request) {
+	resp.Header().Set("Content-Type", "application/json; charset=utf-8")
+	resp.Header().Set("Access-Control-Allow-Origin", "*")
+
+	var hist []StakingRateHistory
+
+	g_particldStatusMutex.Lock()
+	hist = make([]StakingRateHistory, len(g_stakingRateHistoryHourly))
+	copy(hist, g_stakingRateHistoryHourly)
+	g_particldStatusMutex.Unlock()
+
+	data := make([][]interface{}, 0, len(hist))
+
+	for i := len(hist) - 1; i >= 0 ; i-- {
+		t := time.Unix(hist[i].Timestamp, 0)
+
+		data = append(data, []interface{}{t.Hour(), hist[i].Rate})
+	}
+
+	d, err := json.Marshal(data)
+	if err != nil {
+		fmt.Printf("Marshal: %v", err)
+	}
+	io.WriteString(resp, string(d))
+
+}
+
+func handleStakingRateHistoryDaily(resp http.ResponseWriter, req *http.Request) {
+	resp.Header().Set("Content-Type", "application/json; charset=utf-8")
+	resp.Header().Set("Access-Control-Allow-Origin", "*")
+
+	var hist []StakingRateHistory
+
+	g_particldStatusMutex.Lock()
+	hist = make([]StakingRateHistory, len(g_stakingRateHistoryDaily))
+	copy(hist, g_stakingRateHistoryDaily)
+	g_particldStatusMutex.Unlock()
+
+	data := make([][]interface{}, 0, len(hist))
+
+	for i := len(hist) - 1; i >= 0 ; i-- {
+		t := time.Unix(hist[i].Timestamp, 0)
+
+		data = append(data, []interface{}{t.Day(), hist[i].Rate})
+	}
+
+	d, err := json.Marshal(data)
+	if err != nil {
+		fmt.Printf("Marshal: %v", err)
+	}
+	io.WriteString(resp, string(d))
+
+}
+
 func main() {
 
 	fmt.Printf("Started %s\n", g_prgName)
@@ -849,7 +978,6 @@ func main() {
 	}
 
 	g_prpc = particlrpc.NewParticlRpc()
-
 	g_prpc.SetRpcPort(g_config.ParticldRpcPort)
 	g_prpc.SetDataDirectoy(g_config.ParticldDataDir)
 
@@ -862,6 +990,7 @@ func main() {
 	go signalHandler()
 	go particldStatusCollector()
 	go stakingRewardCollector()
+	go stakingRateHistoryCollector()
 
 	if g_tgConfig.BotName != "" && g_tgConfig.BotAuth != "" {
 		go telegramBot()
@@ -877,6 +1006,8 @@ func main() {
 	}
 
 	http.HandleFunc("/stat", handleDaemonStats)
+	http.HandleFunc("/stakingrate/hourly", handleStakingRateHistoryHourly)
+	http.HandleFunc("/stakingrate/daily", handleStakingRateHistoryDaily)
 
 	fmt.Println(g_httpServer.ListenAndServe())
 	fmt.Printf("%s: Stopped.\n", g_prgName)
