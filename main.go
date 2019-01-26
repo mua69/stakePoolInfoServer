@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 	"io"
+	"math"
 )
 
 type Part_NetworkInfo struct {
@@ -152,7 +153,9 @@ type TGConfig struct {
 
 type StakingRateHistory struct {
 	Timestamp int64
-	Rate float64
+	AvgRate float64
+	MinRate float64
+	MaxRate float64
 }
 
 type Sat int64
@@ -491,7 +494,7 @@ func stakingRewardCollector() {
 }
 
 func getStakingRateHistory(interval int64, cnt int) []StakingRateHistory {
-	rows, err := g_db.Query("select block_time/$1 as x, sum(actual_rate)/count(actual_rate) as avg from stakingratestats  group by x order by x desc limit $2",
+	rows, err := g_db.Query("select block_time/$1 as x, sum(actual_rate)/count(actual_rate), min(actual_rate), max(actual_rate) from stakingratestats  group by x order by x desc limit $2",
 		interval, cnt)
 
 	if err != nil {
@@ -499,18 +502,20 @@ func getStakingRateHistory(interval int64, cnt int) []StakingRateHistory {
 		return nil
 	}
 
+	round := func(x float64) float64 { return math.Floor(x*100+0.5)/100 }
 	res := make([]StakingRateHistory, 0, cnt)
 
 	i := 0
 	for cont := rows.Next(); cont; cont = rows.Next() {
 		var timestamp int64
-		var rate float64
+		var avgRate, minRate, maxRate float64
 
-		err = rows.Scan(&timestamp, &rate)
+		err = rows.Scan(&timestamp, &avgRate, &minRate, &maxRate)
 
 		if err == nil {
 			if i < cnt {
-				res = append(res, StakingRateHistory{timestamp * interval, rate})
+				res = append(res, StakingRateHistory{timestamp * interval, round(avgRate),
+				round(minRate), round(maxRate)})
 				i++
 			}
 		} else {
@@ -916,7 +921,7 @@ func handleStakingRateHistoryHourly(resp http.ResponseWriter, req *http.Request)
 	for i := len(hist) - 1; i >= 0 ; i-- {
 		t := time.Unix(hist[i].Timestamp, 0)
 
-		data = append(data, []interface{}{t.Hour(), hist[i].Rate})
+		data = append(data, []interface{}{t.Hour(), hist[i].AvgRate})
 	}
 
 	d, err := json.Marshal(data)
@@ -943,7 +948,7 @@ func handleStakingRateHistoryDaily(resp http.ResponseWriter, req *http.Request) 
 	for i := len(hist) - 1; i >= 0 ; i-- {
 		t := time.Unix(hist[i].Timestamp, 0)
 
-		data = append(data, []interface{}{t.Day(), hist[i].Rate})
+		data = append(data, []interface{}{t.Day(), hist[i].AvgRate})
 	}
 
 	d, err := json.Marshal(data)
@@ -953,6 +958,57 @@ func handleStakingRateHistoryDaily(resp http.ResponseWriter, req *http.Request) 
 	io.WriteString(resp, string(d))
 
 }
+
+
+
+func handleStakingRateHistory(resp http.ResponseWriter, req *http.Request) {
+	resp.Header().Set("Content-Type", "application/json; charset=utf-8")
+	resp.Header().Set("Access-Control-Allow-Origin", "*")
+
+	var histHourly []StakingRateHistory
+	var histDaily []StakingRateHistory
+
+	g_particldStatusMutex.Lock()
+	histDaily = make([]StakingRateHistory, len(g_stakingRateHistoryDaily))
+	histHourly = make([]StakingRateHistory, len(g_stakingRateHistoryHourly))
+	copy(histDaily, g_stakingRateHistoryDaily)
+	copy(histHourly, g_stakingRateHistoryHourly)
+	g_particldStatusMutex.Unlock()
+
+	res := struct {
+		Daily [][]interface{} `json:"daily"`
+		Hourly [][]interface{} `json:"hourly"`
+	}{}
+
+	data := make([][]interface{}, 0, len(histDaily))
+
+	for i := len(histDaily) - 1; i >= 0 ; i-- {
+		//t := time.Unix(histDaily[i].Timestamp, 0).UTC()
+
+		data = append(data, []interface{}{histDaily[i].Timestamp, histDaily[i].AvgRate, histDaily[i].MinRate, histDaily[i].MaxRate})
+	}
+
+	res.Daily = data
+
+	data = make([][]interface{}, 0, len(histHourly))
+
+	for i := len(histHourly) - 1; i >= 0 ; i-- {
+		//t := time.Unix(histHourly[i].Timestamp, 0).UTC()
+
+		data = append(data, []interface{}{histHourly[i].Timestamp, histHourly[i].AvgRate, histHourly[i].MinRate, histHourly[i].MaxRate})
+	}
+
+	res.Hourly = data
+
+
+	d, err := json.Marshal(res)
+	if err != nil {
+		fmt.Printf("Marshal: %v", err)
+	}
+	io.WriteString(resp, string(d))
+
+}
+
 
 func main() {
 
@@ -1006,6 +1062,7 @@ func main() {
 	}
 
 	http.HandleFunc("/stat", handleDaemonStats)
+	http.HandleFunc("/stakingrate", handleStakingRateHistory)
 	http.HandleFunc("/stakingrate/hourly", handleStakingRateHistoryHourly)
 	http.HandleFunc("/stakingrate/daily", handleStakingRateHistoryDaily)
 
