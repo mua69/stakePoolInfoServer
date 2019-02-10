@@ -182,7 +182,7 @@ func readConfig(filename string) bool {
 
 	err = json.Unmarshal(data, &g_config)
 	if err != nil {
-		fmt.Printf("Syntax error in config file %s: %v", filename, err)
+		fmt.Printf("Syntax error in config file %s: %v\n", filename, err)
 		return false
 	}
 
@@ -199,7 +199,7 @@ func readTelegramConfig(filename string) bool {
 
 	err = json.Unmarshal(data, &g_tgConfig)
 	if err != nil {
-		fmt.Printf("Syntax error in Telegram config file %s: %v", filename, err)
+		fmt.Printf("Syntax error in Telegram config file %s: %v\n", filename, err)
 		return false
 	}
 
@@ -862,7 +862,7 @@ func sendWatchdogEmail(msg string) {
 		m := gomail.NewMessage()
 		m.SetHeader("From", g_config.WatchdogEmailFrom)
 		m.SetHeader("To", g_config.WatchdogEmailTo)
-		if g_config.WatchdogEmailSubject != "" {
+		if g_config.WatchdogEmailSubject == "" {
 			m.SetHeader("Subject", "Particld Watchdog Alert")
 		} else {
 			m.SetHeader("Subject", g_config.WatchdogEmailSubject)
@@ -873,7 +873,7 @@ func sendWatchdogEmail(msg string) {
 
 		d := gomail.Dialer{Host: "localhost", Port: 25}
 		if err := d.DialAndSend(m); err != nil {
-			fmt.Printf("particldWatchdog: Failed to send email: %s\n", err.Error())
+			fmt.Printf("Particld Watchdog: Failed to send email: %s\n", err.Error())
 		}
 	}
 }
@@ -894,15 +894,23 @@ func particldWatchdog() {
 	}
 
 	for {
-		stakeinfo, err := g_prpc.GetStakingInfo(g_config.ParticldStakingWallet)
+		err := g_prpc.ReadPartRpcCookie()
+
 		if err != nil {
-			msg = fmt.Sprintf("communication to particld failed.")
-			fmt.Printf("Particld Watchdog: particld communication error: %s\n", err.Error())
+			msg = "communication to particld failed."
+			fmt.Printf("Particld Watchdog: failed to read particld cookie: %s\n", err.Error())
 		} else {
-			if stakeinfo.Staking {
-				msg = "normal operation"
+			stakeinfo, err := g_prpc.GetStakingInfo(g_config.ParticldStakingWallet)
+
+			if err != nil {
+				msg = fmt.Sprintf("communication to particld failed.")
+				fmt.Printf("Particld Watchdog: particld communication error: %s\n", err.Error())
 			} else {
-				msg = fmt.Sprintf("particld is not staking, cause: %s", stakeinfo.Cause)
+				if stakeinfo.Staking {
+					msg = "normal operation"
+				} else {
+					msg = fmt.Sprintf("particld is not staking, cause: %s", stakeinfo.Cause)
+				}
 			}
 		}
 
@@ -918,6 +926,8 @@ func particldWatchdog() {
 
 			sendWatchdogEmail(msg)
 		}
+
+
 
 		time.Sleep(60 * time.Second)
 	}
