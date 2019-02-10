@@ -149,13 +149,11 @@ var g_particldStatusMutex sync.Mutex
 var g_config = Config{Port: 0, ParticldRpcPort: 51735, ZmqEndpoint: "tcp://127.0.0.1:207922"}
 var g_httpServer *http.Server
 var g_tgConfig TGConfig
-var g_stop = false
 var g_TGBotEnabled = false
 
 var g_stakingRateHistoryHourly []StakingRateHistory
 var g_stakingRateHistoryDaily []StakingRateHistory
 
-var g_prpc *particlrpc.ParticlRpc
 var g_db *sql.DB
 
 func partToSat(v interface{}) Sat {
@@ -279,13 +277,17 @@ func particldStatusCollector() {
 	statusError := "communication error"
 	na := "n/a"
 
+	prpc := particlrpc.NewParticlRpc()
+	prpc.SetRpcPort(g_config.ParticldRpcPort)
+	prpc.SetDataDirectoy(g_config.ParticldDataDir)
+
 	for {
 
 		status := ParticldStatus{"", na, na, na, na, na, 0, 0}
 
-		if err := g_prpc.ReadPartRpcCookie(); err == nil {
+		if err := prpc.ReadPartRpcCookie(); err == nil {
 
-			nwinfo, err := g_prpc.GetNetworkInfo()
+			nwinfo, err := prpc.GetNetworkInfo()
 			if err == nil {
 				status.Version = nwinfo.Subversion
 				status.Peers = fmt.Sprintf("%d", nwinfo.Connections)
@@ -294,7 +296,7 @@ func particldStatusCollector() {
 				status.Status = statusError
 			}
 
-			bcinfo, err := g_prpc.GetBlockchainInfo()
+			bcinfo, err := prpc.GetBlockchainInfo()
 			if err == nil {
 				status.LastBlock = fmt.Sprintf("%d", bcinfo.Blocks)
 			} else {
@@ -302,7 +304,7 @@ func particldStatusCollector() {
 				status.Status = statusError
 			}
 
-			stakeinfo, err := g_prpc.GetStakingInfo(g_config.ParticldStakingWallet)
+			stakeinfo, err := prpc.GetStakingInfo(g_config.ParticldStakingWallet)
 			if err == nil {
 				status.Weight = fmt.Sprintf("%d PART", stakeinfo.Weight/SatPerPart)
 
@@ -315,7 +317,7 @@ func particldStatusCollector() {
 				status.Status = statusError
 			}
 
-			uptime, err := g_prpc.GetUptime()
+			uptime, err := prpc.GetUptime()
 
 			if err == nil {
 				status.Uptime = fmt.Sprintf("%.1f days", float64(uptime)/3600/24)
@@ -893,14 +895,19 @@ func particldWatchdog() {
 		}
 	}
 
+
+	prpc := particlrpc.NewParticlRpc()
+	prpc.SetRpcPort(g_config.ParticldRpcPort)
+	prpc.SetDataDirectoy(g_config.ParticldDataDir)
+
 	for {
-		err := g_prpc.ReadPartRpcCookie()
+		err := prpc.ReadPartRpcCookie()
 
 		if err != nil {
 			msg = "communication to particld failed."
 			fmt.Printf("Particld Watchdog: failed to read particld cookie: %s\n", err.Error())
 		} else {
-			stakeinfo, err := g_prpc.GetStakingInfo(g_config.ParticldStakingWallet)
+			stakeinfo, err := prpc.GetStakingInfo(g_config.ParticldStakingWallet)
 
 			if err != nil {
 				msg = fmt.Sprintf("communication to particld failed.")
@@ -940,8 +947,6 @@ func signalHandler() {
 	s := <-signalChannel
 
 	fmt.Printf("%s: Received Signal: %s\n", g_prgName, s.String())
-
-	g_stop = true
 
 	if g_httpServer != nil {
 		if err := g_httpServer.Shutdown(context.Background()); err != nil {
@@ -1093,10 +1098,6 @@ func main() {
 		}
 	}
 
-	g_prpc = particlrpc.NewParticlRpc()
-	g_prpc.SetRpcPort(g_config.ParticldRpcPort)
-	g_prpc.SetDataDirectoy(g_config.ParticldDataDir)
-
 	if g_config.DbUrl != "" {
 		g_db = dbConnect()
 
@@ -1105,7 +1106,6 @@ func main() {
 		}
 	}
 
-	go signalHandler()
 	go particldStatusCollector()
 
 
@@ -1140,11 +1140,10 @@ func main() {
 		http.HandleFunc("/stakingrate/hourly", handleStakingRateHistoryHourly)
 		http.HandleFunc("/stakingrate/daily", handleStakingRateHistoryDaily)
 
+		go signalHandler()
 		fmt.Println(g_httpServer.ListenAndServe())
 	} else {
-		for !g_stop {
-			time.Sleep(time.Second)
-		}
+		signalHandler()
 	}
 
 	fmt.Printf("%s: Stopped.\n", g_prgName)
