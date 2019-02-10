@@ -7,7 +7,9 @@ import (
 	"fmt"
 	_ "github.com/lib/pq"
 	"github.com/mua69/particlrpc"
-		"io/ioutil"
+	"io"
+	"io/ioutil"
+	"math"
 	"net/http"
 	"os"
 	"os/signal"
@@ -15,30 +17,9 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"io"
-	"math"
+	"github.com/go-gomail/gomail"
 )
 
-type Part_NetworkInfo struct {
-	Version     int    `json:"version"`
-	Subversion  string `json:"subversion"`
-	Connections int    `json:"connections"`
-}
-
-type Part_Blockchaininfo struct {
-	Blocks int `json:"blocks"`
-}
-
-type Part_Stakinginfo struct {
-	Staking                   bool    `json:"staking"`
-	Cause                     string  `json:"cause"`
-	Weight                    int64   `json:"weight"`
-	Percentyearreward         float64 `json:"percentyearreward"`
-	Moneysupply               float64 `json:"moneysupply"`
-	Foundationdonationpercent float64 `json:"foundationdonationpercent"`
-	Netstakeweight            int64   `json:"netstakeweight"`
-	Expectedtime              int64   `json:"expectedtime"`
-}
 
 type ParticldStatus struct {
 	Status      string  `json:"status"`
@@ -49,12 +30,6 @@ type ParticldStatus struct {
 	Weight      string  `json:"weight"`
 	NominalRate float64 `json:"nominal_rate"`
 	ActualRate  float64 `json:"actual_rate"`
-}
-
-type RpcResponse struct {
-	Result interface{}
-	Err    string `json:"error"`
-	Id     int
 }
 
 type TGQueryResult struct {
@@ -141,21 +116,25 @@ type Config struct {
 	StakePoolUrl          string
 	ZmqEndpoint           string
 	DbUrl                 string
+	WatchdogEmailTo       string
+	WatchdogEmailFrom	  string
+	WatchdogEmailSubject  string
 }
 
 type TGConfig struct {
-	BotName           string
-	BotAuth           string
-	StatusMsgHour     int
-	StatusMsgMinute   int
-	StatusMsgChatName string
+	BotName             string
+	BotAuth             string
+	StatusMsgHour       int
+	StatusMsgMinute     int
+	StatusMsgChatName   string
+	WatchdogMsgChatName string
 }
 
 type StakingRateHistory struct {
 	Timestamp int64
-	AvgRate float64
-	MinRate float64
-	MaxRate float64
+	AvgRate   float64
+	MinRate   float64
+	MaxRate   float64
 }
 
 type Sat int64
@@ -167,9 +146,11 @@ const SecondsPerDay = 24 * 60 * 60
 var g_prgName = "stakepoolInfoServer"
 var g_particldStatus ParticldStatus
 var g_particldStatusMutex sync.Mutex
-var g_config = Config{Port: 9100, ParticldRpcPort: 51735, ZmqEndpoint: "tcp://127.0.0.1:207922"}
+var g_config = Config{Port: 0, ParticldRpcPort: 51735, ZmqEndpoint: "tcp://127.0.0.1:207922"}
 var g_httpServer *http.Server
 var g_tgConfig TGConfig
+var g_stop = false
+var g_TGBotEnabled = false
 
 var g_stakingRateHistoryHourly []StakingRateHistory
 var g_stakingRateHistoryDaily []StakingRateHistory
@@ -324,6 +305,11 @@ func particldStatusCollector() {
 			stakeinfo, err := g_prpc.GetStakingInfo(g_config.ParticldStakingWallet)
 			if err == nil {
 				status.Weight = fmt.Sprintf("%d PART", stakeinfo.Weight/SatPerPart)
+
+				if g_db == nil {
+					// no db, calculate staking rate from stakeinfo
+					calcStakingReward(stakeinfo)
+				}
 			} else {
 				fmt.Println(err)
 				status.Status = statusError
@@ -395,7 +381,7 @@ func calcStakingReward(stakeinfo *particlrpc.StakingInfo) {
 	g_particldStatus.ActualRate = g_avgActualReward
 	g_particldStatusMutex.Unlock()
 
-	fmt.Printf("Actual avg reward: %.8f\n", g_avgActualReward)
+	//fmt.Printf("Actual avg reward: %.8f\n", g_avgActualReward)
 }
 
 func stakingRewardCollector() {
@@ -502,7 +488,7 @@ func getStakingRateHistory(interval int64, cnt int) []StakingRateHistory {
 		return nil
 	}
 
-	round := func(x float64) float64 { return math.Floor(x*100+0.5)/100 }
+	round := func(x float64) float64 { return math.Floor(x*100+0.5) / 100 }
 	res := make([]StakingRateHistory, 0, cnt)
 
 	i := 0
@@ -515,7 +501,7 @@ func getStakingRateHistory(interval int64, cnt int) []StakingRateHistory {
 		if err == nil {
 			if i < cnt {
 				res = append(res, StakingRateHistory{timestamp * interval, round(avgRate),
-				round(minRate), round(maxRate)})
+					round(minRate), round(maxRate)})
 				i++
 			}
 		} else {
@@ -559,7 +545,6 @@ func stakingRateHistoryCollector() {
 	}
 
 }
-
 
 func telegramCall(in, out interface{}, request string, timeout time.Duration) bool {
 	url := fmt.Sprintf("https://api.telegram.org/bot%s/%s", g_tgConfig.BotAuth, request)
@@ -872,6 +857,72 @@ func telegramRegularMessages() {
 	}
 }
 
+func sendWatchdogEmail(msg string) {
+	if g_config.WatchdogEmailTo != "" && g_config.WatchdogEmailFrom != "" {
+		m := gomail.NewMessage()
+		m.SetHeader("From", g_config.WatchdogEmailFrom)
+		m.SetHeader("To", g_config.WatchdogEmailTo)
+		if g_config.WatchdogEmailSubject != "" {
+			m.SetHeader("Subject", "Particld Watchdog Alert")
+		} else {
+			m.SetHeader("Subject", g_config.WatchdogEmailSubject)
+		}
+
+		m.SetHeader("Importance", "high")
+		m.SetBody("text/plain", msg)
+
+		d := gomail.Dialer{Host: "localhost", Port: 25}
+		if err := d.DialAndSend(m); err != nil {
+			fmt.Printf("particldWatchdog: Failed to send email: %s\n", err.Error())
+		}
+	}
+}
+
+func particldWatchdog() {
+	msg := ""
+	lastMsg := ""
+
+	var chatId int64
+	chatIdOk := false
+
+	if g_TGBotEnabled && g_tgConfig.WatchdogMsgChatName != "" {
+		chatIdOk, chatId = telegramGetChat(g_tgConfig.WatchdogMsgChatName)
+
+		if !chatIdOk {
+			fmt.Printf("TG: Failed to retrieve chat id for chat %s.\n", g_tgConfig.WatchdogMsgChatName)
+		}
+	}
+
+	for {
+		stakeinfo, err := g_prpc.GetStakingInfo(g_config.ParticldStakingWallet)
+		if err != nil {
+			msg = fmt.Sprintf("communication to particld failed.")
+			fmt.Printf("Particld Watchdog: particld communication error: %s\n", err.Error())
+		} else {
+			if stakeinfo.Staking {
+				msg = "normal operation"
+			} else {
+				msg = fmt.Sprintf("particld is not staking, cause: %s", stakeinfo.Cause)
+			}
+		}
+
+		if msg != lastMsg {
+			lastMsg = msg
+			fmt.Printf("Particld Watchdog: %s\n", msg)
+
+			msg = fmt.Sprintf("Particld watchdog: %s\n", msg)
+
+			if chatIdOk {
+				telegramSendMessage(chatId, msg)
+			}
+
+			sendWatchdogEmail(msg)
+		}
+
+		time.Sleep(60 * time.Second)
+	}
+}
+
 func signalHandler() {
 	signalChannel := make(chan os.Signal, 1)
 	signal.Notify(signalChannel) //, os.Interrupt, syscall.SIGQUIT, syscall.SIGTERM)
@@ -880,9 +931,13 @@ func signalHandler() {
 
 	fmt.Printf("%s: Received Signal: %s\n", g_prgName, s.String())
 
-	if err := g_httpServer.Shutdown(context.Background()); err != nil {
-		// Error from closing listeners, or context timeout:
-		fmt.Printf("HTTP server Shutdown: %v\n", err)
+	g_stop = true
+
+	if g_httpServer != nil {
+		if err := g_httpServer.Shutdown(context.Background()); err != nil {
+			// Error from closing listeners, or context timeout:
+			fmt.Printf("HTTP server Shutdown: %v\n", err)
+		}
 	}
 }
 
@@ -904,7 +959,6 @@ func handleDaemonStats(resp http.ResponseWriter, req *http.Request) {
 
 }
 
-
 func handleStakingRateHistoryHourly(resp http.ResponseWriter, req *http.Request) {
 	resp.Header().Set("Content-Type", "application/json; charset=utf-8")
 	resp.Header().Set("Access-Control-Allow-Origin", "*")
@@ -918,7 +972,7 @@ func handleStakingRateHistoryHourly(resp http.ResponseWriter, req *http.Request)
 
 	data := make([][]interface{}, 0, len(hist))
 
-	for i := len(hist) - 1; i >= 0 ; i-- {
+	for i := len(hist) - 1; i >= 0; i-- {
 		t := time.Unix(hist[i].Timestamp, 0)
 
 		data = append(data, []interface{}{t.Hour(), hist[i].AvgRate})
@@ -945,7 +999,7 @@ func handleStakingRateHistoryDaily(resp http.ResponseWriter, req *http.Request) 
 
 	data := make([][]interface{}, 0, len(hist))
 
-	for i := len(hist) - 1; i >= 0 ; i-- {
+	for i := len(hist) - 1; i >= 0; i-- {
 		t := time.Unix(hist[i].Timestamp, 0)
 
 		data = append(data, []interface{}{t.Day(), hist[i].AvgRate})
@@ -958,8 +1012,6 @@ func handleStakingRateHistoryDaily(resp http.ResponseWriter, req *http.Request) 
 	io.WriteString(resp, string(d))
 
 }
-
-
 
 func handleStakingRateHistory(resp http.ResponseWriter, req *http.Request) {
 	resp.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -976,13 +1028,13 @@ func handleStakingRateHistory(resp http.ResponseWriter, req *http.Request) {
 	g_particldStatusMutex.Unlock()
 
 	res := struct {
-		Daily [][]interface{} `json:"daily"`
+		Daily  [][]interface{} `json:"daily"`
 		Hourly [][]interface{} `json:"hourly"`
 	}{}
 
 	data := make([][]interface{}, 0, len(histDaily))
 
-	for i := len(histDaily) - 1; i >= 0 ; i-- {
+	for i := len(histDaily) - 1; i >= 0; i-- {
 		//t := time.Unix(histDaily[i].Timestamp, 0).UTC()
 
 		data = append(data, []interface{}{histDaily[i].Timestamp, histDaily[i].AvgRate, histDaily[i].MinRate, histDaily[i].MaxRate})
@@ -992,14 +1044,13 @@ func handleStakingRateHistory(resp http.ResponseWriter, req *http.Request) {
 
 	data = make([][]interface{}, 0, len(histHourly))
 
-	for i := len(histHourly) - 1; i >= 0 ; i-- {
+	for i := len(histHourly) - 1; i >= 0; i-- {
 		//t := time.Unix(histHourly[i].Timestamp, 0).UTC()
 
 		data = append(data, []interface{}{histHourly[i].Timestamp, histHourly[i].AvgRate, histHourly[i].MinRate, histHourly[i].MaxRate})
 	}
 
 	res.Hourly = data
-
 
 	d, err := json.Marshal(res)
 	if err != nil {
@@ -1008,7 +1059,6 @@ func handleStakingRateHistory(resp http.ResponseWriter, req *http.Request) {
 	io.WriteString(resp, string(d))
 
 }
-
 
 func main() {
 
@@ -1037,35 +1087,55 @@ func main() {
 	g_prpc.SetRpcPort(g_config.ParticldRpcPort)
 	g_prpc.SetDataDirectoy(g_config.ParticldDataDir)
 
-	g_db = dbConnect()
+	if g_config.DbUrl != "" {
+		g_db = dbConnect()
 
-	if g_db == nil {
-		os.Exit(1)
+		if g_db == nil {
+			os.Exit(1)
+		}
 	}
 
 	go signalHandler()
 	go particldStatusCollector()
-	go stakingRewardCollector()
-	go stakingRateHistoryCollector()
+
+
+	if g_db != nil {
+		go stakingRewardCollector()
+		go stakingRateHistoryCollector()
+	}
+
 
 	if g_tgConfig.BotName != "" && g_tgConfig.BotAuth != "" {
+		g_TGBotEnabled = true
 		go telegramBot()
 		go telegramRegularMessages()
 	}
 
-	g_httpServer = &http.Server{
-		Addr:           fmt.Sprintf("localhost:%d", g_config.Port),
-		Handler:        nil,
-		ReadTimeout:    10 * time.Second,
-		WriteTimeout:   10 * time.Second,
-		MaxHeaderBytes: 1 << 20,
+	if (g_TGBotEnabled && g_tgConfig.WatchdogMsgChatName != "") ||
+		(g_config.WatchdogEmailFrom != "" && g_config.WatchdogEmailTo != "") {
+		go particldWatchdog()
 	}
 
-	http.HandleFunc("/stat", handleDaemonStats)
-	http.HandleFunc("/stakingrate", handleStakingRateHistory)
-	http.HandleFunc("/stakingrate/hourly", handleStakingRateHistoryHourly)
-	http.HandleFunc("/stakingrate/daily", handleStakingRateHistoryDaily)
+	if g_config.Port > 0 {
+		g_httpServer = &http.Server{
+			Addr:           fmt.Sprintf("localhost:%d", g_config.Port),
+			Handler:        nil,
+			ReadTimeout:    10 * time.Second,
+			WriteTimeout:   10 * time.Second,
+			MaxHeaderBytes: 1 << 20,
+		}
 
-	fmt.Println(g_httpServer.ListenAndServe())
+		http.HandleFunc("/stat", handleDaemonStats)
+		http.HandleFunc("/stakingrate", handleStakingRateHistory)
+		http.HandleFunc("/stakingrate/hourly", handleStakingRateHistoryHourly)
+		http.HandleFunc("/stakingrate/daily", handleStakingRateHistoryDaily)
+
+		fmt.Println(g_httpServer.ListenAndServe())
+	} else {
+		for !g_stop {
+			time.Sleep(time.Second)
+		}
+	}
+
 	fmt.Printf("%s: Stopped.\n", g_prgName)
 }
