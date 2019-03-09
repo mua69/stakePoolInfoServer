@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"github.com/go-gomail/gomail"
 	_ "github.com/lib/pq"
 	"github.com/mua69/particlrpc"
 	"io"
@@ -17,9 +18,7 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"github.com/go-gomail/gomail"
 )
-
 
 type ParticldStatus struct {
 	Status      string  `json:"status"`
@@ -28,6 +27,7 @@ type ParticldStatus struct {
 	LastBlock   string  `json:"last_block"`
 	Version     string  `json:"version"`
 	Weight      string  `json:"weight"`
+	NetWeight   string  `json:"net_weight"`
 	NominalRate float64 `json:"nominal_rate"`
 	ActualRate  float64 `json:"actual_rate"`
 }
@@ -117,7 +117,7 @@ type Config struct {
 	ZmqEndpoint           string
 	DbUrl                 string
 	WatchdogEmailTo       string
-	WatchdogEmailFrom	  string
+	WatchdogEmailFrom     string
 	WatchdogEmailSubject  string
 }
 
@@ -283,7 +283,7 @@ func particldStatusCollector() {
 
 	for {
 
-		status := ParticldStatus{"", na, na, na, na, na, 0, 0}
+		status := ParticldStatus{"", na, na, na, na, na, na, 0, 0}
 
 		if err := prpc.ReadPartRpcCookie(); err == nil {
 
@@ -307,6 +307,7 @@ func particldStatusCollector() {
 			stakeinfo, err := prpc.GetStakingInfo(g_config.ParticldStakingWallet)
 			if err == nil {
 				status.Weight = fmt.Sprintf("%d PART", stakeinfo.Weight/SatPerPart)
+				status.NetWeight = fmt.Sprintf("%dK PART", stakeinfo.Netstakeweight/SatPerPart/1000)
 
 				if g_db == nil {
 					// no db, calculate staking rate from stakeinfo
@@ -338,12 +339,15 @@ func particldStatusCollector() {
 		}
 
 		g_particldStatusMutex.Lock()
+
 		g_particldStatus.Status = status.Status
 		g_particldStatus.Uptime = status.Uptime
 		g_particldStatus.Peers = status.Peers
 		g_particldStatus.LastBlock = status.LastBlock
 		g_particldStatus.Version = status.Version
 		g_particldStatus.Weight = status.Weight
+		g_particldStatus.NetWeight = status.NetWeight
+
 		g_particldStatusMutex.Unlock()
 
 		time.Sleep(60 * time.Second)
@@ -637,6 +641,7 @@ func telegramCmdStatus(chatId int64) bool {
 	msg += fmt.Sprintf(" Peers     : %s\n", status.Peers)
 	msg += fmt.Sprintf(" Last Block: %s\n", status.LastBlock)
 	msg += fmt.Sprintf(" Staking   : %s\n", status.Weight)
+	msg += fmt.Sprintf(" NetStaking: %s\n", status.NetWeight)
 	msg += "```"
 
 	return telegramSendMessage(chatId, msg)
@@ -895,7 +900,6 @@ func particldWatchdog() {
 		}
 	}
 
-
 	prpc := particlrpc.NewParticlRpc()
 	prpc.SetRpcPort(g_config.ParticldRpcPort)
 	prpc.SetDataDirectoy(g_config.ParticldDataDir)
@@ -934,8 +938,6 @@ func particldWatchdog() {
 			sendWatchdogEmail(msg)
 		}
 
-
-
 		time.Sleep(60 * time.Second)
 	}
 }
@@ -968,7 +970,7 @@ func handleDaemonStats(resp http.ResponseWriter, req *http.Request) {
 
 	data, err := json.Marshal(status)
 	if err != nil {
-		fmt.Printf("Marshal: %v", err)
+		fmt.Printf("Marshal: %v\n", err)
 	}
 	io.WriteString(resp, string(data))
 
@@ -1069,7 +1071,7 @@ func handleStakingRateHistory(resp http.ResponseWriter, req *http.Request) {
 
 	d, err := json.Marshal(res)
 	if err != nil {
-		fmt.Printf("Marshal: %v", err)
+		fmt.Printf("Marshal: %v\n", err)
 	}
 	io.WriteString(resp, string(d))
 
@@ -1108,12 +1110,10 @@ func main() {
 
 	go particldStatusCollector()
 
-
 	if g_db != nil {
 		go stakingRewardCollector()
 		go stakingRateHistoryCollector()
 	}
-
 
 	if g_tgConfig.BotName != "" && g_tgConfig.BotAuth != "" {
 		g_TGBotEnabled = true
