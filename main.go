@@ -113,7 +113,9 @@ type Config struct {
 	ParticldRpcPort       int
 	ParticldDataDir       string
 	ParticldStakingWallet string
+	ParticldStakingCtlKey string
 	StakePoolUrl          string
+	StakePoolRewardAdr    string
 	ZmqEndpoint           string
 	DbUrl                 string
 	WatchdogEmailTo       string
@@ -1077,6 +1079,62 @@ func handleStakingRateHistory(resp http.ResponseWriter, req *http.Request) {
 
 }
 
+func stakingCtl(enabled bool) string {
+	prpc := particlrpc.NewParticlRpc()
+	prpc.SetRpcPort(g_config.ParticldRpcPort)
+	prpc.SetDataDirectoy(g_config.ParticldDataDir)
+	err := prpc.ReadPartRpcCookie()
+
+	if err != nil {
+		fmt.Printf("stakingCtl: Failed to read particld cookie.")
+		return "communication failed"
+	}
+
+	options, err := prpc.SetStakingOptions(enabled, g_config.StakePoolRewardAdr, g_config.ParticldStakingWallet)
+
+	if err != nil {
+		fmt.Printf("stakingCtl: SetStakingOptions failed: %v", err)
+		return "communication failed"
+	}
+
+	if options.Enabled != enabled || options.Rewardaddress != g_config.StakePoolRewardAdr {
+		fmt.Printf("stakingCtl: setting target options failed: %+v\n", *options)
+		return "setting failed"
+	}
+
+	return "ok"
+}
+
+func handleStakingOn(resp http.ResponseWriter, req *http.Request) {
+	resp.Header().Set("Content-Type", "application/json; charset=utf-8")
+	resp.Header().Set("Access-Control-Allow-Origin", "*")
+
+	fmt.Printf("Staking Ctl: on\n")
+
+	res := stakingCtl(true)
+
+	d, err := json.Marshal(res)
+	if err != nil {
+		fmt.Printf("handleStakingOn: marshal: %v\n", err)
+	}
+	io.WriteString(resp, string(d))
+}
+
+func handleStakingOff(resp http.ResponseWriter, req *http.Request) {
+	resp.Header().Set("Content-Type", "application/json; charset=utf-8")
+	resp.Header().Set("Access-Control-Allow-Origin", "*")
+
+	fmt.Printf("Staking Ctl: off\n")
+
+	res := stakingCtl(false)
+
+	d, err := json.Marshal(res)
+	if err != nil {
+		fmt.Printf("handleStakingOff: marshal: %v\n", err)
+	}
+	io.WriteString(resp, string(d))
+}
+
 func main() {
 
 	fmt.Printf("Started %s\n", g_prgName)
@@ -1139,6 +1197,11 @@ func main() {
 		http.HandleFunc("/stakingrate", handleStakingRateHistory)
 		http.HandleFunc("/stakingrate/hourly", handleStakingRateHistoryHourly)
 		http.HandleFunc("/stakingrate/daily", handleStakingRateHistoryDaily)
+
+		if g_config.ParticldStakingCtlKey != "" {
+			http.HandleFunc( "/staking/" + g_config.ParticldStakingCtlKey + "/1", handleStakingOn)
+			http.HandleFunc( "/staking/" + g_config.ParticldStakingCtlKey + "/0", handleStakingOff)
+		}
 
 		go signalHandler()
 		fmt.Println(g_httpServer.ListenAndServe())
