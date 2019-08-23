@@ -21,15 +21,16 @@ import (
 )
 
 type ParticldStatus struct {
-	Status      string  `json:"status"`
-	Uptime      string  `json:"uptime"`
-	Peers       string  `json:"peers"`
-	LastBlock   string  `json:"last_block"`
-	Version     string  `json:"version"`
-	Weight      string  `json:"weight"`
-	NetWeight   string  `json:"net_weight"`
-	NominalRate float64 `json:"nominal_rate"`
-	ActualRate  float64 `json:"actual_rate"`
+	Status            string  `json:"status"`
+	Uptime            string  `json:"uptime"`
+	Peers             string  `json:"peers"`
+	LastBlock         string  `json:"last_block"`
+	Version           string  `json:"version"`
+	Weight            string  `json:"weight"`
+	NetWeight         string  `json:"net_weight"`
+	NominalRate       float64 `json:"nominal_rate"`
+	ActualRate        float64 `json:"actual_rate"`
+	SmsgFeeRateTarget string  `json:"smsg_fee_rate_target"`
 }
 
 type TGQueryResult struct {
@@ -121,6 +122,7 @@ type Config struct {
 	WatchdogEmailTo       string
 	WatchdogEmailFrom     string
 	WatchdogEmailSubject  string
+	Smsgfeeratetarget     float64
 }
 
 type TGConfig struct {
@@ -285,7 +287,8 @@ func particldStatusCollector() {
 
 	for {
 
-		status := ParticldStatus{"", na, na, na, na, na, na, 0, 0}
+		status := ParticldStatus{Status:"", Version:na, Peers:na, LastBlock:na, Weight:na, NetWeight:na, Uptime:na,
+			SmsgFeeRateTarget:"not set"}
 
 		if err := prpc.ReadPartRpcCookie(); err == nil {
 
@@ -329,6 +332,17 @@ func particldStatusCollector() {
 				status.Status = statusError
 			}
 
+			stakingoptions, err := prpc.GetStakingOptions(g_config.ParticldStakingWallet)
+
+			if err == nil {
+				if stakingoptions.Smsgfeeratetarget != 0 {
+					status.SmsgFeeRateTarget = fmt.Sprintf("%f PART", stakingoptions.Smsgfeeratetarget)
+				}
+			} else {
+				fmt.Println(err)
+				status.Status = statusError
+			}
+
 			if status.Status != statusError {
 				if stakeinfo.Staking {
 					status.Status = "Staking"
@@ -349,6 +363,7 @@ func particldStatusCollector() {
 		g_particldStatus.Version = status.Version
 		g_particldStatus.Weight = status.Weight
 		g_particldStatus.NetWeight = status.NetWeight
+		g_particldStatus.SmsgFeeRateTarget = status.SmsgFeeRateTarget
 
 		g_particldStatusMutex.Unlock()
 
@@ -636,14 +651,15 @@ func telegramCmdStatus(chatId int64) bool {
 
 	msg := "*Particl Node Info*\n"
 	msg += "```"
-	msg += fmt.Sprintf(" Timestamp : %s\n", time.Now().UTC().Format(time.RFC3339))
-	msg += fmt.Sprintf(" Status    : %s\n", status.Status)
-	msg += fmt.Sprintf(" Version   : %s\n", status.Version)
-	msg += fmt.Sprintf(" Uptime    : %s\n", status.Uptime)
-	msg += fmt.Sprintf(" Peers     : %s\n", status.Peers)
-	msg += fmt.Sprintf(" Last Block: %s\n", status.LastBlock)
-	msg += fmt.Sprintf(" Staking   : %s\n", status.Weight)
-	msg += fmt.Sprintf(" NetStaking: %s\n", status.NetWeight)
+	msg += fmt.Sprintf(" Timestamp  : %s\n", time.Now().UTC().Format(time.RFC3339))
+	msg += fmt.Sprintf(" Status     : %s\n", status.Status)
+	msg += fmt.Sprintf(" Version    : %s\n", status.Version)
+	msg += fmt.Sprintf(" Uptime     : %s\n", status.Uptime)
+	msg += fmt.Sprintf(" Peers      : %s\n", status.Peers)
+	msg += fmt.Sprintf(" Last Block : %s\n", status.LastBlock)
+	msg += fmt.Sprintf(" Staking    : %s\n", status.Weight)
+	msg += fmt.Sprintf(" NetStaking : %s\n", status.NetWeight)
+	msg += fmt.Sprintf(" MP Fee Vote: %s\n", status.SmsgFeeRateTarget)
 	msg += "```"
 
 	return telegramSendMessage(chatId, msg)
@@ -1090,7 +1106,8 @@ func stakingCtl(enabled bool) string {
 		return "communication failed"
 	}
 
-	options, err := prpc.SetStakingOptions(enabled, g_config.StakePoolRewardAdr, g_config.ParticldStakingWallet)
+	options, err := prpc.SetStakingOptions(enabled, g_config.StakePoolRewardAdr, g_config.Smsgfeeratetarget,
+		g_config.ParticldStakingWallet)
 
 	if err != nil {
 		fmt.Printf("stakingCtl: SetStakingOptions failed: %v", err)
@@ -1199,8 +1216,8 @@ func main() {
 		http.HandleFunc("/stakingrate/daily", handleStakingRateHistoryDaily)
 
 		if g_config.ParticldStakingCtlKey != "" {
-			http.HandleFunc( "/staking/" + g_config.ParticldStakingCtlKey + "/1", handleStakingOn)
-			http.HandleFunc( "/staking/" + g_config.ParticldStakingCtlKey + "/0", handleStakingOff)
+			http.HandleFunc("/staking/"+g_config.ParticldStakingCtlKey+"/1", handleStakingOn)
+			http.HandleFunc("/staking/"+g_config.ParticldStakingCtlKey+"/0", handleStakingOff)
 		}
 
 		go signalHandler()
