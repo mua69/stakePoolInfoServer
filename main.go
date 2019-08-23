@@ -30,7 +30,7 @@ type ParticldStatus struct {
 	NetWeight         string  `json:"net_weight"`
 	NominalRate       float64 `json:"nominal_rate"`
 	ActualRate        float64 `json:"actual_rate"`
-	SmsgFeeRateTarget string  `json:"smsg_fee_rate_target"`
+	SmsgFeeRateTarget float64 `json:"smsg_fee_rate_target"`
 }
 
 type TGQueryResult struct {
@@ -287,8 +287,7 @@ func particldStatusCollector() {
 
 	for {
 
-		status := ParticldStatus{Status:"", Version:na, Peers:na, LastBlock:na, Weight:na, NetWeight:na, Uptime:na,
-			SmsgFeeRateTarget:"not set"}
+		status := ParticldStatus{Status:"", Version:na, Peers:na, LastBlock:na, Weight:na, NetWeight:na, Uptime:na}
 
 		if err := prpc.ReadPartRpcCookie(); err == nil {
 
@@ -335,9 +334,8 @@ func particldStatusCollector() {
 			stakingoptions, err := prpc.GetStakingOptions(g_config.ParticldStakingWallet)
 
 			if err == nil {
-				if stakingoptions.Smsgfeeratetarget != 0 {
-					status.SmsgFeeRateTarget = fmt.Sprintf("%f PART", stakingoptions.Smsgfeeratetarget)
-				}
+				status.SmsgFeeRateTarget = stakingoptions.Smsgfeeratetarget
+
 			} else {
 				fmt.Println(err)
 				status.Status = statusError
