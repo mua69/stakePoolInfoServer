@@ -657,7 +657,7 @@ func telegramCmdStatus(chatId int64) bool {
 	msg += fmt.Sprintf(" Last Block : %s\n", status.LastBlock)
 	msg += fmt.Sprintf(" Staking    : %s\n", status.Weight)
 	msg += fmt.Sprintf(" NetStaking : %s\n", status.NetWeight)
-	msg += fmt.Sprintf(" MP Fee Vote: %s\n", status.SmsgFeeRateTarget)
+	msg += fmt.Sprintf(" MP Fee Vote: %f PART\n", status.SmsgFeeRateTarget)
 	msg += "```"
 
 	return telegramSendMessage(chatId, msg)
