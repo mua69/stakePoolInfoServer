@@ -345,7 +345,7 @@ func particldStatusCollector() {
 				if stakeinfo.Staking {
 					status.Status = "Staking"
 				} else {
-					status.Status = fmt.Sprintf("Not Staking: %s", stakeinfo.Cause)
+					status.Status = fmt.Sprintf("Not Staking: %s", stakeinfo.Errors)
 				}
 			}
 		} else {
@@ -384,9 +384,9 @@ func calcStakingReward(stakeinfo *particlrpc.StakingInfo) {
 		actualReward := blockReward / stakingTime * 365 * 100 / float64(stakeinfo.Weight) * SatPerPart
 	*/
 
-	nominalReward := stakeinfo.Percentyearreward * (100 - stakeinfo.Foundationdonationpercent) / 100
+	nominalReward := stakeinfo.Percentyearreward * (100 - stakeinfo.Treasurydonationpercent) / 100
 
-	actualReward := stakeinfo.Moneysupply * stakeinfo.Percentyearreward * (100 - stakeinfo.Foundationdonationpercent)
+	actualReward := stakeinfo.Moneysupply * stakeinfo.Percentyearreward * (100 - stakeinfo.Treasurydonationpercent)
 	actualReward /= 100 * 100
 	actualReward /= float64(stakeinfo.Netstakeweight) / SatPerPart
 	actualReward *= 100
@@ -936,7 +936,7 @@ func particldWatchdog() {
 				if stakeinfo.Staking {
 					msg = "normal operation"
 				} else {
-					msg = fmt.Sprintf("particld is not staking, cause: %s", stakeinfo.Cause)
+					msg = fmt.Sprintf("particld is not staking, cause: %s", stakeinfo.Errors)
 				}
 			}
 		}
