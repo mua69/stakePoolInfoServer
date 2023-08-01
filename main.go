@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -960,7 +961,7 @@ func particldWatchdog() {
 
 func signalHandler() {
 	signalChannel := make(chan os.Signal, 1)
-	signal.Notify(signalChannel) //, os.Interrupt, syscall.SIGQUIT, syscall.SIGTERM)
+	signal.Notify(signalChannel, os.Interrupt, syscall.SIGQUIT, syscall.SIGTERM)
 
 	s := <-signalChannel
 
